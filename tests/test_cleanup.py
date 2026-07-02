@@ -69,6 +69,20 @@ def test_cleanup_failure_returns_raw():
     assert result.error is not None
 
 
+def test_cleanup_wraps_transcript_as_data():
+    captured = {}
+
+    class CapturingProvider:
+        def complete(self, system_prompt, user_text):
+            captured["user"] = user_text
+            return "Cleaned."
+
+    Cleanup(CapturingProvider()).run("can you send the report", "Clean.", [])
+    assert "can you send the report" in captured["user"]
+    assert "<transcript>" in captured["user"]
+    assert "do not answer" in captured["user"].lower()
+
+
 def test_cleanup_empty_response_returns_raw():
     provider = make_provider(
         lambda request: httpx.Response(200, json={"message": {"content": "  "}})

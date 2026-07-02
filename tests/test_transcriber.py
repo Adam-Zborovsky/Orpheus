@@ -61,30 +61,47 @@ def test_load_auto_prefers_cuda():
     assert attempts == [("cuda", "float16")]
 
 
-def test_load_auto_falls_back_to_cpu_int8():
+def test_load_auto_falls_back_to_cpu_int8_when_float16_unsupported():
     attempts = []
 
     def factory(model_size, device, compute_type):
         attempts.append((device, compute_type))
-        if device == "cuda":
-            raise RuntimeError("CUDA driver not found")
+        if device == "cuda" or compute_type == "float16":  # CPU can't do float16
+            raise RuntimeError("unsupported")
         return FakeModel()
 
-    t = Transcriber(device="auto", model_factory=factory)
+    t = Transcriber(device="auto", compute_type="float16", model_factory=factory)
     assert t.load() == "cpu"
-    assert attempts == [("cuda", "float16"), ("cpu", "int8")]
+    assert attempts == [("cuda", "float16"), ("cpu", "float16"), ("cpu", "int8")]
+    assert t.active_compute_type == "int8"
 
 
-def test_load_cpu_only_uses_int8():
+def test_load_cpu_honors_requested_compute_type():
     attempts = []
 
     def factory(model_size, device, compute_type):
         attempts.append((device, compute_type))
+        return FakeModel()
+
+    t = Transcriber(device="cpu", compute_type="float32", model_factory=factory)
+    assert t.load() == "cpu"
+    assert attempts == [("cpu", "float32")]
+    assert t.active_compute_type == "float32"
+
+
+def test_load_cpu_invalid_type_falls_back_to_int8():
+    attempts = []
+
+    def factory(model_size, device, compute_type):
+        attempts.append((device, compute_type))
+        if compute_type == "float16":
+            raise RuntimeError("float16 unsupported on CPU")
         return FakeModel()
 
     t = Transcriber(device="cpu", compute_type="float16", model_factory=factory)
     assert t.load() == "cpu"
-    assert attempts == [("cpu", "int8")]
+    assert attempts == [("cpu", "float16"), ("cpu", "int8")]
+    assert t.active_compute_type == "int8"
 
 
 def test_load_total_failure_raises():

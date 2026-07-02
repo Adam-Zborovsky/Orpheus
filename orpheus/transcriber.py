@@ -45,6 +45,24 @@ class TranscriptionResult:
     duration_s: float
 
 
+def plan_load_attempts(device: str, compute_type: str) -> list[tuple[str, str]]:
+    """Ordered (device, compute_type) load attempts.
+
+    Honors the requested compute type on the chosen device, with CPU int8 as a
+    final safety net (float16 isn't valid on CPU, so a bad request degrades
+    instead of failing).
+    """
+    if device == "cpu":
+        attempts = [("cpu", compute_type)]
+    elif device == "cuda":
+        return [("cuda", compute_type)]  # explicit CUDA: no silent CPU fallback
+    else:  # auto: prefer CUDA, then CPU with the requested type
+        attempts = [("cuda", compute_type), ("cpu", compute_type)]
+    if ("cpu", "int8") not in attempts:
+        attempts.append(("cpu", "int8"))
+    return attempts
+
+
 class Transcriber:
     def __init__(self, model_size: str = "large-v3-turbo", device: str = "auto",
                  compute_type: str = "float16", cpu_threads: int = 0,
@@ -55,6 +73,7 @@ class Transcriber:
         self.cpu_threads = cpu_threads  # 0 = all cores (resolve_cpu_threads)
         self.num_workers = num_workers  # >1 only helps concurrent transcriptions
         self.active_device: str | None = None
+        self.active_compute_type: str | None = None
         self._factory = model_factory or self._default_factory
         self._model = None
 
@@ -70,17 +89,12 @@ class Transcriber:
         """Load the model; returns the device actually used ('cuda' or 'cpu')."""
         if self._model is not None:
             return self.active_device
-        if self.device == "cpu":
-            attempts = [("cpu", "int8")]
-        elif self.device == "cuda":
-            attempts = [("cuda", self.compute_type)]
-        else:  # auto: try CUDA, fall back to CPU int8 (spec: error handling)
-            attempts = [("cuda", self.compute_type), ("cpu", "int8")]
         last_exc: Exception | None = None
-        for device, compute_type in attempts:
+        for device, compute_type in plan_load_attempts(self.device, self.compute_type):
             try:
                 self._model = self._factory(self.model_size, device, compute_type)
                 self.active_device = device
+                self.active_compute_type = compute_type
                 return device
             except Exception as exc:
                 last_exc = exc

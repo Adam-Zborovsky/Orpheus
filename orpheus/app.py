@@ -131,18 +131,29 @@ class AppController(QObject):
         self._build_components()
         self._toggle_requested.connect(self._handle_toggle)
 
+    _MODEL_FIELDS = ("model_size", "device", "compute_type", "cpu_threads",
+                     "num_workers")
+
+    def _make_transcriber(self) -> Transcriber:
+        s = self._settings
+        return Transcriber(s.model_size, s.device, s.compute_type,
+                           cpu_threads=s.cpu_threads, num_workers=s.num_workers)
+
+    def _sync_history(self) -> None:
+        if not self._settings.history_enabled:
+            if self._history is not None:
+                self._history.close()
+                self._history = None
+            return
+        if self._history is None:
+            self._history = HistoryStore(self._data_dir / "history.sqlite3")
+
     def _build_components(self) -> None:
         s = self._settings
-        self._transcriber = Transcriber(s.model_size, s.device, s.compute_type,
-                                        cpu_threads=s.cpu_threads,
-                                        num_workers=s.num_workers)
+        self._transcriber = self._make_transcriber()
         self._cleanup = Cleanup(OllamaProvider(s.ollama_url, s.ollama_model))
         self._injector = TextInjector(s.delivery)
-        if self._history is not None:
-            self._history.close()
-            self._history = None
-        if s.history_enabled:
-            self._history = HistoryStore(self._data_dir / "history.sqlite3")
+        self._sync_history()
 
     # -- public API -----------------------------------------------------------
 
@@ -151,12 +162,16 @@ class AppController(QObject):
         self._toggle_requested.emit()
 
     def apply_settings(self, settings: Settings) -> None:
-        model_key = (self._settings.model_size, self._settings.device,
-                     self._settings.compute_type)
+        old = self._settings
         self._settings = settings
-        self._build_components()
-        if (settings.model_size, settings.device,
-                settings.compute_type) != model_key:
+        # Cheap components: always rebuild to pick up new values.
+        self._cleanup = Cleanup(OllamaProvider(settings.ollama_url,
+                                               settings.ollama_model))
+        self._injector = TextInjector(settings.delivery)
+        self._sync_history()
+        # Expensive: only rebuild + reload the model when its inputs changed.
+        if any(getattr(old, f) != getattr(settings, f) for f in self._MODEL_FIELDS):
+            self._transcriber = self._make_transcriber()
             self.preload()
 
     def preload(self) -> None:
@@ -186,7 +201,8 @@ class AppController(QObject):
             self.error.emit(f"Whisper model failed to load: {result}")
             self.state_changed.emit("error")
         elif result == "cpu" and self._settings.device != "cpu":
-            self.notice.emit("CUDA unavailable — transcribing on CPU (int8). "
+            ct = self._transcriber.active_compute_type or "int8"
+            self.notice.emit(f"CUDA unavailable — transcribing on CPU ({ct}). "
                              "Expect slower results.")
 
     @Slot()

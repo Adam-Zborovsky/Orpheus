@@ -53,12 +53,12 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-def test_listening_has_no_text_processing_and_done_do(qapp):
+def test_only_done_and_error_carry_text(qapp):
     pill = PillOverlay()
     pill.set_state("listening")
     assert pill._display_text() == ""
     pill.set_state("processing")
-    assert pill._display_text() == "Transcribing"
+    assert pill._display_text() == ""  # animation only, no "Transcribing" text
     pill.set_state("done")
     assert pill._display_text() == "Done"
     pill.set_state("idle")

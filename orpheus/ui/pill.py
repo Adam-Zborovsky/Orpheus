@@ -1,8 +1,8 @@
 """Floating status pill. Appearance is a functional placeholder (per DESIGN.md).
 
-States: listening -> bars only (no text); processing -> shimmering text;
-done -> bars fade out under a frosted "Done" badge, then the pill fades away;
-error -> red message, auto-hides.
+Compact and low-opacity. States: listening -> level bars only; processing ->
+small pulsing dots (no text); done -> "Done" over a soft dark frosted backdrop,
+then the pill fades out; error -> red text, auto-hides.
 """
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import QWidget
 
-_BAR_COUNT = 24
-_TICK_MS = 33
-_DONE_CROSSFADE_S = 0.35
-_DONE_HOLD_S = 0.6
+_BAR_COUNT = 13
+_TICK_MS = 40
+_DONE_HOLD_S = 0.9
 _DONE_FADE_S = 0.4
+_PAD = 10
 
 
 class LevelNormalizer:
@@ -39,7 +39,7 @@ class LevelNormalizer:
 
 
 class PillOverlay(QWidget):
-    WIDTH, HEIGHT = 160, 30
+    WIDTH, HEIGHT = 72, 18  # ~1/4 the area of the previous 160x30 pill
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -95,16 +95,14 @@ class PillOverlay(QWidget):
         self._message = text
         self.update()
 
-    # -- internals ---------------------------------------------------------------
+    # -- internals -------------------------------------------------------------
 
     def _display_text(self) -> str:
-        if self._state == "processing":
-            return "Transcribing"
         if self._state == "done":
             return "Done"
         if self._state == "error":
             return self._message or "Error"
-        return ""
+        return ""  # listening and processing carry no text
 
     def _reposition(self) -> None:
         geo = QGuiApplication.primaryScreen().availableGeometry()
@@ -119,81 +117,82 @@ class PillOverlay(QWidget):
 
     def _tick(self) -> None:
         self._t += _TICK_MS / 1000.0
-        if self._state == "done":
-            fade_start = _DONE_CROSSFADE_S + _DONE_HOLD_S
-            if self._t > fade_start:
-                fade = (self._t - fade_start) / _DONE_FADE_S
-                if fade >= 1.0:
-                    self._dismiss()
-                    return
-                self.setWindowOpacity(1.0 - fade)
+        if self._state == "done" and self._t > _DONE_HOLD_S:
+            fade = (self._t - _DONE_HOLD_S) / _DONE_FADE_S
+            if fade >= 1.0:
+                self._dismiss()
+                return
+            self.setWindowOpacity(1.0 - fade)
         self.update()
 
-    # -- painting ----------------------------------------------------------------
+    # -- painting --------------------------------------------------------------
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        # Dark and low-opacity: near-black at ~40% so it stays subtle.
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(20, 20, 24, 150))
+        painter.setBrush(QColor(6, 6, 8, 105))
         painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
 
         font = painter.font()
-        font.setPointSizeF(8.5)
+        font.setPointSizeF(8.0)
         painter.setFont(font)
 
         if self._state == "listening":
-            self._paint_bars(painter, rect, 255)
+            self._paint_bars(painter, rect)
         elif self._state == "processing":
-            self._paint_shimmer_text(painter, rect)
+            self._paint_dots(painter, rect)
         elif self._state == "done":
-            progress = min(1.0, self._t / _DONE_CROSSFADE_S)
-            self._paint_bars(painter, rect, int(255 * (1.0 - progress)))
-            if progress > 0.0:
-                self._paint_done(painter, rect, progress)
+            self._paint_done(painter, rect)
         elif self._state == "error":
             painter.setPen(QColor(255, 99, 99))
             text = painter.fontMetrics().elidedText(
                 self._display_text(), Qt.TextElideMode.ElideRight,
-                int(rect.width()) - 24)
+                int(rect.width()) - 8)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
-    def _paint_bars(self, painter: QPainter, rect: QRectF, alpha: int) -> None:
-        if alpha <= 0:
-            return
+    def _paint_bars(self, painter: QPainter, rect: QRectF) -> None:
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(235, 235, 240, alpha))
-        pitch = (rect.width() - 24) / _BAR_COUNT
-        base_x = rect.left() + 12
+        painter.setBrush(QColor(235, 235, 240, 235))
+        pitch = (rect.width() - 2 * _PAD) / _BAR_COUNT
+        base_x = rect.left() + _PAD
         mid_y = rect.center().y()
-        max_h = rect.height() - 10
+        max_h = rect.height() - 6
         for i, level in enumerate(self._levels):
             h = max(2.0, level * max_h)
             painter.drawRoundedRect(
-                QRectF(base_x + i * pitch + (pitch - 3) / 2, mid_y - h / 2, 3, h),
-                1.5, 1.5)
+                QRectF(base_x + i * pitch + (pitch - 2.5) / 2, mid_y - h / 2,
+                       2.5, h), 1.25, 1.25)
 
-    def _paint_shimmer_text(self, painter: QPainter, rect: QRectF) -> None:
-        text = self._display_text()
-        metrics = painter.fontMetrics()
-        x = rect.center().x() - metrics.horizontalAdvance(text) / 2
-        baseline = rect.center().y() + metrics.capHeight() / 2
-        phase = self._t * 6.0
-        for i, char in enumerate(text):
-            wave = 0.5 + 0.5 * math.sin(phase - i * 0.55)
-            painter.setPen(QColor(235, 235, 240, int(90 + 165 * wave)))
-            painter.drawText(QPointF(x, baseline), char)
-            x += metrics.horizontalAdvance(char)
-
-    def _paint_done(self, painter: QPainter, rect: QRectF,
-                    progress: float) -> None:
-        # frosted badge behind the word, covering the fading bars
-        overlay = rect.adjusted(rect.width() * 0.28, 4,
-                                -rect.width() * 0.28, -4)
+    def _paint_dots(self, painter: QPainter, rect: QRectF) -> None:
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(240, 240, 245, int(70 * progress)))
-        painter.drawRoundedRect(overlay, overlay.height() / 2,
-                                overlay.height() / 2)
-        painter.setPen(QColor(140, 230, 160, int(255 * progress)))
+        cx, cy = rect.center().x(), rect.center().y()
+        spacing, radius = 9.0, 2.6
+        phase = self._t * 5.0
+        for i in (-1, 0, 1):
+            wave = 0.5 + 0.5 * math.sin(phase - i * 0.9)
+            painter.setBrush(QColor(235, 235, 240, int(70 + 165 * wave)))
+            painter.drawEllipse(QPointF(cx + i * spacing, cy), radius, radius)
+
+    def _paint_done(self, painter: QPainter, rect: QRectF) -> None:
+        progress = min(1.0, self._t / 0.2)  # quick fade-in of the badge + word
+        # Soft, blurry-looking dark backdrop: stacked translucent rounded rects
+        # of decreasing size fake a blurred panel behind the word.
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in range(5):
+            inset = i * 0.9
+            painter.setBrush(QColor(0, 0, 0, int(28 * progress)))
+            r = rect.adjusted(inset, inset, -inset, -inset)
+            painter.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        # Soft green glow of the word (offset copies) + crisp text on top.
+        green = QColor(150, 235, 170)
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            painter.setPen(QColor(green.red(), green.green(), green.blue(),
+                                  int(45 * progress)))
+            painter.drawText(rect.translated(dx, dy),
+                             Qt.AlignmentFlag.AlignCenter, "Done")
+        painter.setPen(QColor(green.red(), green.green(), green.blue(),
+                              int(255 * progress)))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Done")

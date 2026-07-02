@@ -49,8 +49,12 @@ class SettingsWindow(QDialog):
         self._model.setCurrentText(settings.model_size)
 
         self._compute = QComboBox()
-        self._compute.addItems(["float16", "int8"])
+        self._compute.setEditable(True)
+        self._compute.addItems(["int8", "int8_float32", "float32", "float16"])
         self._compute.setCurrentText(settings.compute_type)
+        self._compute.setToolTip(
+            "CPU: int8 (fastest) or float32 (most accurate). "
+            "float16 is GPU-only and falls back to int8 on CPU.")
 
         self._cpu_threads = QSpinBox()
         self._cpu_threads.setRange(0, 128)
