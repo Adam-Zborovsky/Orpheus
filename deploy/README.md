@@ -7,7 +7,7 @@ container**. It launches in your login session instead, with no console window.
 ## Install
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy\startup\install-startup-task.ps1
+powershell -ExecutionPolicy Bypass -File deploy\install-startup-task.ps1
 ```
 
 This registers a Task Scheduler task ("Orpheus") that runs
@@ -30,7 +30,7 @@ Start-ScheduledTask -TaskName Orpheus
 ## Uninstall
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy\startup\uninstall-startup-task.ps1
+powershell -ExecutionPolicy Bypass -File deploy\uninstall-startup-task.ps1
 ```
 
 ## Notes
@@ -42,4 +42,4 @@ powershell -ExecutionPolicy Bypass -File deploy\startup\uninstall-startup-task.p
   `shell:startup`. Task Scheduler is preferred here for the startup delay and
   the "start if available" recovery.
 - If you also run the Ollama container, enable Docker Desktop's "Start when you
-  log in" so the LLM is up before you dictate (see `../ollama/README.md`).
+  log in" so the LLM is up before you dictate (see `ollama/README.md`).

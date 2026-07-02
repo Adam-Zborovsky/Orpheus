@@ -8,8 +8,15 @@
 #Requires -Version 5
 $ErrorActionPreference = "Stop"
 
-# deploy/startup -> deploy -> repo root
-$repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+# Find the repo root by walking up until we see pyproject.toml — robust to
+# wherever under the repo this script is placed.
+$repo = $PSScriptRoot
+while ($repo -and -not (Test-Path (Join-Path $repo "pyproject.toml"))) {
+    $repo = Split-Path -Parent $repo
+}
+if (-not $repo) {
+    throw "could not locate the repo root (no pyproject.toml above $PSScriptRoot)."
+}
 $pythonw = Join-Path $repo ".venv\Scripts\pythonw.exe"
 if (-not (Test-Path $pythonw)) {
     throw "pythonw.exe not found at $pythonw — create the venv first (py -3.12 -m venv .venv)."
