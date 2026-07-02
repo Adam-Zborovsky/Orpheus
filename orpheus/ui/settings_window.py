@@ -11,7 +11,8 @@ from ..audio import AudioCapture
 from ..hotkey import validate_hotkey
 from ..settings import DEFAULT_CLEANUP_PROMPT, Settings
 
-_MODEL_SIZES = ["large-v3", "distil-large-v3", "medium", "small", "base", "tiny"]
+_MODEL_SIZES = ["large-v3-turbo", "large-v3", "distil-large-v3", "medium",
+                "small", "base", "tiny"]
 _SYSTEM_DEFAULT = "System default"
 
 

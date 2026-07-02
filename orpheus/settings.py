@@ -23,7 +23,7 @@ You clean up raw speech-to-text transcripts. Rules:
 class Settings:
     hotkey: str = "<ctrl>+<alt>+<space>"
     input_device: str = ""  # "" = system default; otherwise exact device name
-    model_size: str = "large-v3"
+    model_size: str = "large-v3-turbo"  # multilingual, ~6x faster than large-v3
     device: str = "auto"  # auto | cuda | cpu
     compute_type: str = "float16"  # float16 | int8
     language: str = "auto"  # auto | en | he
