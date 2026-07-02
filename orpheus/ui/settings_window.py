@@ -5,7 +5,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFormLayout, QLineEdit,
                                QMessageBox, QPlainTextEdit, QPushButton,
-                               QVBoxLayout)
+                               QSpinBox, QVBoxLayout)
 
 from ..audio import AudioCapture
 from ..hotkey import validate_hotkey
@@ -23,6 +23,7 @@ class SettingsWindow(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Orpheus Settings")
         self.setMinimumWidth(480)
+        self._num_workers = settings.num_workers  # not exposed in UI; preserved
 
         self._hotkey = QLineEdit(settings.hotkey)
         self._hotkey.setToolTip(
@@ -50,6 +51,13 @@ class SettingsWindow(QDialog):
         self._compute = QComboBox()
         self._compute.addItems(["float16", "int8"])
         self._compute.setCurrentText(settings.compute_type)
+
+        self._cpu_threads = QSpinBox()
+        self._cpu_threads.setRange(0, 128)
+        self._cpu_threads.setValue(settings.cpu_threads)
+        self._cpu_threads.setSpecialValueText("Auto (all cores)")  # shown at 0
+        self._cpu_threads.setToolTip(
+            "CPU threads for transcription. 0 = use all logical cores.")
 
         self._language = QComboBox()
         for label, value in [("Auto-detect", "auto"), ("English", "en"),
@@ -87,6 +95,7 @@ class SettingsWindow(QDialog):
         form.addRow("Microphone", self._device)
         form.addRow("Whisper model", self._model)
         form.addRow("Compute type", self._compute)
+        form.addRow("CPU threads", self._cpu_threads)
         form.addRow("Language", self._language)
         form.addRow("", self._cleanup_enabled)
         form.addRow("Ollama URL", self._ollama_url)
@@ -114,6 +123,8 @@ class SettingsWindow(QDialog):
             model_size=self._model.currentText().strip(),
             device="auto",  # CUDA/CPU choice is automatic per spec
             compute_type=self._compute.currentText(),
+            cpu_threads=self._cpu_threads.value(),
+            num_workers=self._num_workers,
             language=self._language.currentData(),
             cleanup_enabled=self._cleanup_enabled.isChecked(),
             ollama_url=self._ollama_url.text().strip(),

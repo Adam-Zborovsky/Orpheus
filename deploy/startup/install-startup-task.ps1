@@ -15,6 +15,14 @@ if (-not (Test-Path $pythonw)) {
     throw "pythonw.exe not found at $pythonw — create the venv first (py -3.12 -m venv .venv)."
 }
 
+# Store Whisper (Hugging Face) model downloads on E:\A_I alongside the LLM
+# models, instead of C:\Users\Adam\.cache\huggingface. Set as a persistent
+# user env var so both the task and manual launches inherit it.
+$hfHome = "E:\A_I\huggingface"
+New-Item -ItemType Directory -Force $hfHome | Out-Null
+[Environment]::SetEnvironmentVariable("HF_HOME", $hfHome, "User")
+Write-Host "HF_HOME set to $hfHome (Whisper models will download there)."
+
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument "-m orpheus" -WorkingDirectory $repo
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $trigger.Delay = "PT15S"

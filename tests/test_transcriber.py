@@ -3,7 +3,20 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from orpheus.transcriber import Transcriber, build_initial_prompt, resolve_language
+from orpheus.transcriber import (Transcriber, build_initial_prompt,
+                                 resolve_cpu_threads, resolve_language)
+
+
+def test_resolve_cpu_threads_explicit_wins():
+    assert resolve_cpu_threads(6, cpu_count=16) == 6
+
+
+def test_resolve_cpu_threads_auto_uses_all_cores():
+    assert resolve_cpu_threads(0, cpu_count=16) == 16
+
+
+def test_resolve_cpu_threads_auto_handles_unknown_count():
+    assert resolve_cpu_threads(0, cpu_count=None) >= 0
 
 
 def test_resolve_language():

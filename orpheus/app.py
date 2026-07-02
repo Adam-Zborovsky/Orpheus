@@ -133,7 +133,9 @@ class AppController(QObject):
 
     def _build_components(self) -> None:
         s = self._settings
-        self._transcriber = Transcriber(s.model_size, s.device, s.compute_type)
+        self._transcriber = Transcriber(s.model_size, s.device, s.compute_type,
+                                        cpu_threads=s.cpu_threads,
+                                        num_workers=s.num_workers)
         self._cleanup = Cleanup(OllamaProvider(s.ollama_url, s.ollama_model))
         self._injector = TextInjector(s.delivery)
         if self._history is not None:

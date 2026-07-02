@@ -14,6 +14,13 @@ This registers a Task Scheduler task ("Orpheus") that runs
 `.venv\Scripts\pythonw.exe -m orpheus` ~15s after you log in. `pythonw.exe`
 has no console, so there's no terminal flash — it goes straight to the tray.
 
+The installer also sets a persistent user env var `HF_HOME=E:\A_I\huggingface`
+so Whisper model downloads land on E: next to the LLM models (instead of
+`C:\Users\Adam\.cache\huggingface`). Uninstalling leaves `HF_HOME` in place —
+the models live there; clear it manually with
+`[Environment]::SetEnvironmentVariable("HF_HOME", $null, "User")` if you want
+the default cache back.
+
 Start it immediately without logging out:
 
 ```powershell

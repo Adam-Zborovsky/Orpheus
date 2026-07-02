@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Callable
 
@@ -10,6 +11,18 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 _LANGUAGE_MODES = {"auto": None, "en": "en", "he": "he"}
+
+
+def resolve_cpu_threads(cpu_threads: int, cpu_count: int | None = None) -> int:
+    """0 (auto) -> all logical cores; otherwise the explicit request.
+
+    faster-whisper/CTranslate2 default to a conservative thread count, which
+    leaves a CPU-only machine mostly idle. Auto uses every core.
+    """
+    if cpu_threads > 0:
+        return cpu_threads
+    resolved = cpu_count if cpu_count is not None else os.cpu_count()
+    return resolved or 0
 
 
 def resolve_language(mode: str) -> str | None:
@@ -32,22 +45,26 @@ class TranscriptionResult:
     duration_s: float
 
 
-def _default_model_factory(model_size: str, device: str, compute_type: str):
-    from faster_whisper import WhisperModel  # heavy import, deferred
-
-    return WhisperModel(model_size, device=device, compute_type=compute_type)
-
-
 class Transcriber:
-    def __init__(self, model_size: str = "large-v3", device: str = "auto",
-                 compute_type: str = "float16",
-                 model_factory: Callable | None = None):
+    def __init__(self, model_size: str = "large-v3-turbo", device: str = "auto",
+                 compute_type: str = "float16", cpu_threads: int = 0,
+                 num_workers: int = 1, model_factory: Callable | None = None):
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self.cpu_threads = cpu_threads  # 0 = all cores (resolve_cpu_threads)
+        self.num_workers = num_workers  # >1 only helps concurrent transcriptions
         self.active_device: str | None = None
-        self._factory = model_factory or _default_model_factory
+        self._factory = model_factory or self._default_factory
         self._model = None
+
+    def _default_factory(self, model_size: str, device: str, compute_type: str):
+        from faster_whisper import WhisperModel  # heavy import, deferred
+
+        return WhisperModel(
+            model_size, device=device, compute_type=compute_type,
+            cpu_threads=resolve_cpu_threads(self.cpu_threads),
+            num_workers=self.num_workers)
 
     def load(self) -> str:
         """Load the model; returns the device actually used ('cuda' or 'cpu')."""

@@ -26,6 +26,8 @@ class Settings:
     model_size: str = "large-v3-turbo"  # multilingual, ~6x faster than large-v3
     device: str = "auto"  # auto | cuda | cpu
     compute_type: str = "float16"  # float16 | int8
+    cpu_threads: int = 0  # 0 = use all logical cores
+    num_workers: int = 1  # >1 only helps concurrent transcriptions
     language: str = "auto"  # auto | en | he
     cleanup_enabled: bool = True
     ollama_url: str = "http://localhost:11434"
