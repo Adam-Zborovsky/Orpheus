@@ -21,12 +21,21 @@ def test_toggle_from_listening_stops():
     assert machine.state is State.PROCESSING
 
 
-def test_toggle_while_processing_ignored():
+def test_toggle_while_processing_cancels():
     machine = DictationStateMachine()
     machine.on_toggle()
     machine.on_toggle()
-    assert machine.on_toggle() is None
-    assert machine.state is State.PROCESSING
+    assert machine.on_toggle() == "cancel"
+    assert machine.state is State.IDLE
+
+
+def test_toggle_after_cancel_starts_a_new_session():
+    machine = DictationStateMachine()
+    machine.on_toggle()  # start
+    machine.on_toggle()  # stop
+    machine.on_toggle()  # cancel -> back to idle
+    assert machine.on_toggle() == "start"
+    assert machine.state is State.LISTENING
 
 
 def test_finished_returns_to_idle():
@@ -164,3 +173,38 @@ def test_pipeline_passes_language_and_vocab():
     settings = Settings(language="he", vocabulary=["Orpheus"])
     run_pipeline(AUDIO, settings, transcriber, FakeCleanup(), FakeInjector(), None)
     assert transcriber.calls == [("he", ["Orpheus"])]
+
+
+# --- cancellation --------------------------------------------------------------
+
+def test_pipeline_cancelled_after_transcription_skips_cleanup_and_injection():
+    cleanup, injector, history = FakeCleanup(), FakeInjector(), FakeHistory()
+    result = run_pipeline(AUDIO, Settings(), FakeTranscriber(), cleanup, injector,
+                          history, is_cancelled=lambda: True)
+    assert result.ok is False
+    assert result.cancelled is True
+    assert cleanup.calls == []
+    assert injector.injected == []
+    assert history.rows == []
+
+
+def test_pipeline_cancelled_after_cleanup_skips_injection():
+    calls = {"n": 0}
+
+    def is_cancelled():
+        calls["n"] += 1
+        return calls["n"] > 1  # not cancelled at the first check, cancelled by the second
+
+    injector, history = FakeInjector(), FakeHistory()
+    result = run_pipeline(AUDIO, Settings(), FakeTranscriber(), FakeCleanup(),
+                          injector, history, is_cancelled=is_cancelled)
+    assert result.ok is False
+    assert result.cancelled is True
+    assert injector.injected == []
+    assert history.rows == []
+
+
+def test_pipeline_not_cancelled_by_default():
+    result = run_pipeline(AUDIO, Settings(), FakeTranscriber(), FakeCleanup(),
+                          FakeInjector(), None)
+    assert result.cancelled is False

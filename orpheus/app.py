@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import enum
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
@@ -38,7 +40,10 @@ class DictationStateMachine:
         if self.state is State.LISTENING:
             self.state = State.PROCESSING
             return "stop"
-        return None  # PROCESSING: ignore taps until the pipeline finishes
+        if self.state is State.PROCESSING:
+            self.state = State.IDLE  # a tap mid-pipeline cancels it
+            return "cancel"
+        return None
 
     def on_finished(self) -> None:
         self.state = State.IDLE
@@ -52,13 +57,18 @@ class PipelineResult:
     used_llm: bool = False
     error: str | None = None
     notice: str | None = None  # non-fatal warning worth surfacing
+    cancelled: bool = False    # tapped mid-pipeline; suppress error/done UI
 
 
 def run_pipeline(audio, settings: Settings, transcriber, cleanup, injector,
-                 history) -> PipelineResult:
+                 history, is_cancelled: Callable[[], bool] = lambda: False
+                 ) -> PipelineResult:
     """Audio -> STT -> optional LLM cleanup -> inject -> history.
 
-    Cleanup failures degrade to the raw transcript; captured words are never lost.
+    Cleanup failures degrade to the raw transcript; captured words are never
+    lost. `is_cancelled` is polled between stages (STT and cleanup calls
+    themselves can't be interrupted mid-call) — a cancel skips whatever
+    hasn't run yet, so nothing gets typed or saved after the hotkey cancels.
     """
     if audio is None or getattr(audio, "size", 0) == 0:
         return PipelineResult(ok=False, error="No audio captured")
@@ -72,6 +82,8 @@ def run_pipeline(audio, settings: Settings, transcriber, cleanup, injector,
     raw = transcription.text.strip()
     if not raw:
         return PipelineResult(ok=False, error="Nothing was heard")
+    if is_cancelled():
+        return PipelineResult(ok=False, raw_text=raw, cancelled=True)
 
     final, used_llm, notice = raw, False, None
     if settings.cleanup_enabled and cleanup is not None:
@@ -79,6 +91,9 @@ def run_pipeline(audio, settings: Settings, transcriber, cleanup, injector,
         final, used_llm = result.text, result.used_llm
         if result.error:
             notice = f"Cleanup failed, inserted raw transcript ({result.error})"
+    if is_cancelled():
+        return PipelineResult(ok=False, raw_text=raw, final_text=final,
+                              cancelled=True)
 
     try:
         injector.inject(final)
@@ -128,6 +143,7 @@ class AppController(QObject):
         self._capture = AudioCapture(level_callback=self.level_changed.emit)
         self._history: HistoryStore | None = None
         self._threads: list[_WorkerThread] = []
+        self._cancel_event: threading.Event | None = None
         self._build_components()
         self._toggle_requested.connect(self._handle_toggle)
 
@@ -223,13 +239,25 @@ class AppController(QObject):
             settings = self._settings
             transcriber, cleanup = self._transcriber, self._cleanup
             injector, history = self._injector, self._history
+            cancel_event = threading.Event()
+            self._cancel_event = cancel_event
             self._spawn(
                 lambda: run_pipeline(audio, settings, transcriber, cleanup,
-                                     injector, history),
+                                     injector, history,
+                                     is_cancelled=cancel_event.is_set),
                 self._on_pipeline_done,
             )
+        elif action == "cancel":
+            if self._cancel_event is not None:
+                self._cancel_event.set()
+            self.state_changed.emit("idle")
 
     def _on_pipeline_done(self, result) -> None:
+        if getattr(result, "cancelled", False):
+            # State was already reset to idle when the hotkey cancelled it;
+            # a concurrent new session may already be listening/processing,
+            # so this stale result must not touch state or emit anything.
+            return
         self._machine.on_finished()
         if isinstance(result, Exception):
             self.error.emit(f"Dictation failed: {result}")
