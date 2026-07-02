@@ -1,0 +1,28 @@
+[project]
+name = "orpheus"
+version = "0.1.0"
+description = "Local voice dictation: hotkey -> Whisper -> LLM cleanup -> type into the focused app"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.7",
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26",
+    "pynput>=1.7.6",
+    "httpx>=0.27",
+    "tomli-w>=1.0",
+    "pyperclip>=1.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["orpheus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
