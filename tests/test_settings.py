@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from orpheus.settings import Settings, load_settings, save_settings
+from orpheus.settings import (DEFAULT_CLEANUP_PROMPT, Settings, load_settings,
+                              save_settings)
+
+
+def test_default_prompt_covers_corrections_and_lists():
+    prompt = DEFAULT_CLEANUP_PROMPT.lower()
+    assert "scratch that" in prompt          # self-correction handling
+    assert "never translate" in prompt       # language preservation
+    assert "own line" in prompt              # list formatting
+    assert Settings().cleanup_prompt == DEFAULT_CLEANUP_PROMPT
 
 
 def test_missing_file_returns_defaults(tmp_path: Path):
