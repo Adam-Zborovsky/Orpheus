@@ -36,6 +36,7 @@ def main() -> int:
     controller.state_changed.connect(pill.set_state)
     controller.level_changed.connect(pill.set_level)
     controller.error.connect(pill.set_message)
+    controller.error.connect(tray.show_notice)  # pill is small; full text via tray
     controller.notice.connect(tray.show_notice)
 
     hotkeys = HotkeyManager(state["settings"].hotkey, controller.toggle)
