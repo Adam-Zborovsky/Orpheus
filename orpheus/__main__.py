@@ -7,8 +7,10 @@ import sys
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from .app import AppController
+from .history import HistoryStore
 from .hotkey import HotkeyManager
 from .settings import default_config_path, load_settings, save_settings
+from .ui.history_window import HistoryWindow
 from .ui.pill import PillOverlay
 from .ui.settings_window import SettingsWindow
 from .ui.tray import TrayIcon, app_icon
@@ -58,9 +60,24 @@ def main() -> int:
     def open_settings() -> None:
         dialog = SettingsWindow(state["settings"])
         dialog.saved.connect(on_settings_saved)
+        dialog.history_requested.connect(open_history)
         dialog.exec()
 
+    def open_history() -> None:
+        # Short-lived read, independent of AppController's own history
+        # connection — works whether or not history is currently enabled.
+        history_path = config_path.parent / "history.sqlite3"
+        entries = []
+        if history_path.exists():
+            store = HistoryStore(history_path)
+            try:
+                entries = store.recent(limit=200)
+            finally:
+                store.close()
+        HistoryWindow(entries).exec()
+
     tray.settings_requested.connect(open_settings)
+    tray.history_requested.connect(open_history)
     tray.quit_requested.connect(app.quit)
     tray.show()
 

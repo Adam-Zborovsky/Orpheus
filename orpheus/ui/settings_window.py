@@ -18,6 +18,7 @@ _SYSTEM_DEFAULT = "System default"
 
 class SettingsWindow(QDialog):
     saved = Signal(object)  # Settings
+    history_requested = Signal()
 
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
@@ -93,6 +94,8 @@ class SettingsWindow(QDialog):
 
         self._history_enabled = QCheckBox("Save transcript history")
         self._history_enabled.setChecked(settings.history_enabled)
+        show_history = QPushButton("Show Transcriptions…")
+        show_history.clicked.connect(self.history_requested.emit)
 
         form = QFormLayout()
         form.addRow("Hotkey", self._hotkey)
@@ -109,6 +112,7 @@ class SettingsWindow(QDialog):
         form.addRow("Vocabulary", self._vocabulary)
         form.addRow("Text delivery", self._delivery)
         form.addRow("", self._history_enabled)
+        form.addRow("", show_history)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
                                    | QDialogButtonBox.StandardButton.Cancel)

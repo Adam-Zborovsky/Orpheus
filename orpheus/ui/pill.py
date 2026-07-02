@@ -11,7 +11,7 @@ import math
 from collections import deque
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Slot
-from PySide6.QtGui import QColor, QGuiApplication, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 _BAR_COUNT = 13
@@ -48,7 +48,7 @@ class LevelNormalizer:
 
 
 class PillOverlay(QWidget):
-    WIDTH, HEIGHT = 72, 18
+    WIDTH, HEIGHT = 72, 26
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -172,9 +172,10 @@ class PillOverlay(QWidget):
         painter.translate(0, (1.0 - appear) * _SLIDE_PX + close * _SLIDE_PX)
 
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        # Dark and low-opacity: near-black at ~40% so it stays subtle.
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(6, 6, 8, 105))
+        # Lower fill opacity than before, but a thin edge keeps the pill
+        # reading as one solid shape instead of a soft translucent blur.
+        painter.setBrush(QColor(6, 6, 8, 80))
+        painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
         painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
 
         font = painter.font()

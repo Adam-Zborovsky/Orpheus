@@ -34,6 +34,7 @@ def _fallback_icon() -> QIcon:
 
 class TrayIcon(QSystemTrayIcon):
     settings_requested = Signal()
+    history_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, parent=None):
@@ -43,6 +44,9 @@ class TrayIcon(QSystemTrayIcon):
         settings_action = QAction("Settings…", menu)
         settings_action.triggered.connect(self.settings_requested.emit)
         menu.addAction(settings_action)
+        history_action = QAction("Show Transcriptions…", menu)
+        history_action.triggered.connect(self.history_requested.emit)
+        menu.addAction(history_action)
         menu.addSeparator()
         quit_action = QAction("Quit", menu)
         quit_action.triggered.connect(self.quit_requested.emit)
