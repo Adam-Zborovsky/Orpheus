@@ -72,6 +72,43 @@ def test_error_message_shown(qapp):
     pill.set_state("idle")
 
 
+def test_appear_animation_fades_in(qapp):
+    pill = PillOverlay()
+    pill.set_state("listening")
+    assert pill.isVisible()
+    assert pill.windowOpacity() == 0.0  # starts transparent
+    for _ in range(15):
+        pill._tick()
+    assert pill.windowOpacity() > 0.9  # fully faded in
+    pill.set_state("idle")
+
+
+def test_idle_plays_close_animation_then_hides(qapp):
+    pill = PillOverlay()
+    pill.set_state("listening")
+    for _ in range(15):
+        pill._tick()
+    pill.set_state("idle")
+    assert pill.isVisible()  # not an instant hide: close animation runs
+    assert pill._closing is True
+    for _ in range(15):
+        pill._tick()
+    assert not pill.isVisible()
+
+
+def test_bars_ease_toward_levels(qapp):
+    pill = PillOverlay()
+    pill.set_state("listening")
+    pill.set_level(0.02)  # loud -> target 1.0 at the newest bar
+    before = pill._shown[-1]
+    pill._tick()
+    mid = pill._shown[-1]
+    pill._tick()
+    after = pill._shown[-1]
+    assert before < mid < after <= 1.0  # smooth approach, not a jump
+    pill.set_state("idle")
+
+
 def test_cross_thread_level_delivery(qapp):
     from PySide6.QtCore import QObject, Signal
 

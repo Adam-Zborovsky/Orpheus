@@ -1,8 +1,9 @@
 """Floating status pill. Appearance is a functional placeholder (per DESIGN.md).
 
-Compact and low-opacity. States: listening -> level bars only; processing ->
-small pulsing dots (no text); done -> "Done" over a soft dark frosted backdrop,
-then the pill fades out; error -> red text, auto-hides.
+Compact and low-opacity. The whole pill fades+slides in when it appears and
+fades+slides out when it leaves (done, error timeout, or idle). States:
+listening -> smoothed level bars only; processing -> small pulsing dots (no
+text); done -> "Done" over a soft dark frosted backdrop; error -> red text.
 """
 from __future__ import annotations
 
@@ -14,10 +15,18 @@ from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import QWidget
 
 _BAR_COUNT = 13
-_TICK_MS = 40
+_TICK_MS = 33
+_APPEAR_S = 0.18
+_CLOSE_S = 0.22
 _DONE_HOLD_S = 0.9
-_DONE_FADE_S = 0.4
+_ERROR_HOLD_S = 3.0
+_SLIDE_PX = 6.0
 _PAD = 10
+
+
+def _ease_out(p: float) -> float:
+    p = min(1.0, max(0.0, p))
+    return 1.0 - (1.0 - p) ** 3
 
 
 class LevelNormalizer:
@@ -39,7 +48,7 @@ class LevelNormalizer:
 
 
 class PillOverlay(QWidget):
-    WIDTH, HEIGHT = 72, 18  # ~1/4 the area of the previous 160x30 pill
+    WIDTH, HEIGHT = 72, 18
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -51,44 +60,47 @@ class PillOverlay(QWidget):
         self._state = "idle"
         self._message = ""
         self._levels: deque[float] = deque([0.0] * _BAR_COUNT, maxlen=_BAR_COUNT)
+        self._shown: list[float] = [0.0] * _BAR_COUNT  # eased display values
         self._normalizer = LevelNormalizer()
-        self._t = 0.0  # seconds since the current state began
+        self._t = 0.0          # seconds since the current state began
+        self._appear_t = _APPEAR_S  # appear-animation clock (full = appeared)
+        self._closing = False
+        self._close_t = 0.0
         self._anim = QTimer(self)
         self._anim.setInterval(_TICK_MS)
         self._anim.timeout.connect(self._tick)
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self._dismiss)
 
     # -- slots -----------------------------------------------------------------
 
     @Slot(str)
     def set_state(self, state: str) -> None:
+        if state == "idle":
+            if self.isVisible() and not self._closing:
+                self._begin_close()
+            return
+        was_hidden = not self.isVisible() or self._closing
         self._state = state
         self._t = 0.0
-        self._hide_timer.stop()
-        self._anim.stop()
-        self.setWindowOpacity(1.0)
-        if state == "idle":
-            self.hide()
-            return
+        self._closing = False
+        self._close_t = 0.0
         if state == "listening":
             self._message = ""
             self._levels.extend([0.0] * _BAR_COUNT)
+            self._shown = [0.0] * _BAR_COUNT
             self._normalizer = LevelNormalizer()
-        elif state in ("processing", "done"):
+        if was_hidden:
+            self._appear_t = 0.0
+            self.setWindowOpacity(0.0)
+            self._reposition()
+            self.show()
+        if not self._anim.isActive():
             self._anim.start()
-        elif state == "error":
-            self._hide_timer.start(3000)
-        self._reposition()
-        self.show()
         self.update()
 
     @Slot(float)
     def set_level(self, value: float) -> None:
+        # Targets only; the animation tick eases the bars toward them.
         self._levels.append(self._normalizer.level(value))
-        if self._state == "listening":
-            self.update()
 
     @Slot(str)
     def set_message(self, text: str) -> None:
@@ -109,20 +121,44 @@ class PillOverlay(QWidget):
         self.move(geo.center().x() - self.WIDTH // 2,
                   geo.bottom() - self.HEIGHT - 24)
 
-    def _dismiss(self) -> None:
+    def _begin_close(self) -> None:
+        self._closing = True
+        self._close_t = 0.0
+        if not self._anim.isActive():
+            self._anim.start()
+
+    def _finish_close(self) -> None:
         self._anim.stop()
         self.hide()
         self.setWindowOpacity(1.0)
         self._state = "idle"
+        self._closing = False
+
+    def _opacity(self) -> float:
+        appear = _ease_out(self._appear_t / _APPEAR_S)
+        close = _ease_out(self._close_t / _CLOSE_S) if self._closing else 0.0
+        return appear * (1.0 - close)
 
     def _tick(self) -> None:
-        self._t += _TICK_MS / 1000.0
-        if self._state == "done" and self._t > _DONE_HOLD_S:
-            fade = (self._t - _DONE_HOLD_S) / _DONE_FADE_S
-            if fade >= 1.0:
-                self._dismiss()
+        dt = _TICK_MS / 1000.0
+        self._t += dt
+        if self._appear_t < _APPEAR_S:
+            self._appear_t = min(_APPEAR_S, self._appear_t + dt)
+        # Ease bars toward their targets: snappy attack, soft release.
+        for i, target in enumerate(self._levels):
+            k = 0.55 if target > self._shown[i] else 0.25
+            self._shown[i] += (target - self._shown[i]) * k
+        if not self._closing:
+            if self._state == "done" and self._t > _DONE_HOLD_S:
+                self._begin_close()
+            elif self._state == "error" and self._t > _ERROR_HOLD_S:
+                self._begin_close()
+        if self._closing:
+            self._close_t += dt
+            if self._close_t >= _CLOSE_S:
+                self._finish_close()
                 return
-            self.setWindowOpacity(1.0 - fade)
+        self.setWindowOpacity(self._opacity())
         self.update()
 
     # -- painting --------------------------------------------------------------
@@ -130,6 +166,11 @@ class PillOverlay(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Slide: rise in while appearing, sink out while closing.
+        appear = _ease_out(self._appear_t / _APPEAR_S)
+        close = _ease_out(self._close_t / _CLOSE_S) if self._closing else 0.0
+        painter.translate(0, (1.0 - appear) * _SLIDE_PX + close * _SLIDE_PX)
+
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         # Dark and low-opacity: near-black at ~40% so it stays subtle.
         painter.setPen(Qt.PenStyle.NoPen)
@@ -160,7 +201,7 @@ class PillOverlay(QWidget):
         base_x = rect.left() + _PAD
         mid_y = rect.center().y()
         max_h = rect.height() - 6
-        for i, level in enumerate(self._levels):
+        for i, level in enumerate(self._shown):
             h = max(2.0, level * max_h)
             painter.drawRoundedRect(
                 QRectF(base_x + i * pitch + (pitch - 2.5) / 2, mid_y - h / 2,
