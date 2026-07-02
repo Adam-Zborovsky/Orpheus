@@ -39,6 +39,10 @@ $lnk.Arguments = "-m orpheus"
 $lnk.WorkingDirectory = $repo
 $lnk.WindowStyle = 7   # minimized; pythonw shows no window regardless
 $lnk.Description = "Orpheus voice dictation"
+$ico = Join-Path $repo "orpheus\assets\orpheus.ico"
+if (Test-Path $ico) {
+    $lnk.IconLocation = "$ico,0"
+}
 $lnk.Save()
 
 Write-Host "Installed Startup shortcut: $lnkPath"

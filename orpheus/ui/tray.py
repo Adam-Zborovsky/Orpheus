@@ -1,12 +1,23 @@
 """System tray icon with settings/quit menu."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QRect, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "orpheus.ico"
 
-def _make_icon() -> QIcon:
+
+def app_icon() -> QIcon:
+    """The Orpheus icon (multi-size .ico); painted fallback if assets missing."""
+    if ICON_PATH.exists():
+        return QIcon(str(ICON_PATH))
+    return _fallback_icon()
+
+
+def _fallback_icon() -> QIcon:
     pixmap = QPixmap(64, 64)
     pixmap.fill(QColor(0, 0, 0, 0))
     painter = QPainter(pixmap)
@@ -26,7 +37,7 @@ class TrayIcon(QSystemTrayIcon):
     quit_requested = Signal()
 
     def __init__(self, parent=None):
-        super().__init__(_make_icon(), parent)
+        super().__init__(app_icon(), parent)
         self.setToolTip("Orpheus — voice dictation")
         menu = QMenu()
         settings_action = QAction("Settings…", menu)

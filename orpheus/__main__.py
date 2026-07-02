@@ -11,15 +11,23 @@ from .hotkey import HotkeyManager
 from .settings import default_config_path, load_settings, save_settings
 from .ui.pill import PillOverlay
 from .ui.settings_window import SettingsWindow
-from .ui.tray import TrayIcon
+from .ui.tray import TrayIcon, app_icon
 
 
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    if sys.platform == "win32":
+        # Give the process its own taskbar identity; otherwise Windows groups
+        # every window under the generic python.exe icon.
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "Zborovsky.Orpheus")
     app = QApplication(sys.argv)
     app.setApplicationName("Orpheus")
+    app.setWindowIcon(app_icon())  # taskbar + window icon (settings dialog)
     app.setQuitOnLastWindowClosed(False)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
