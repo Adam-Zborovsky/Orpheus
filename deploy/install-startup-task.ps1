@@ -19,7 +19,7 @@ if (-not $repo) {
 }
 $pythonw = Join-Path $repo ".venv\Scripts\pythonw.exe"
 if (-not (Test-Path $pythonw)) {
-    throw "pythonw.exe not found at $pythonw — create the venv first (py -3.12 -m venv .venv)."
+    throw "pythonw.exe not found at $pythonw — create the venv first (py -V:3.12 -m venv .venv)."
 }
 
 # Store Whisper (Hugging Face) model downloads on E:\A_I alongside the LLM

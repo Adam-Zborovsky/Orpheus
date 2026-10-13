@@ -141,7 +141,7 @@ hotkey tap (stop)
 
 ## Requirements
 
-- **Windows 11**, Python 3.12 (ctranslate2 wheels don't cover 3.14 yet)
+- **Windows 11**, Python 3.12 (required by the prebuilt CTranslate2 wheel)
 - [Ollama](https://ollama.com) running locally for LLM cleanup (optional — without it the raw transcript is injected)
 - NVIDIA GPU for CUDA acceleration (optional — falls back to CPU `int8` automatically; pick a smaller model like `small`/`medium` for speed on CPU)
 - Microphone
@@ -155,8 +155,8 @@ hotkey tap (stop)
 git clone https://github.com/Adam-Zborovsky/Orpheus.git
 cd Orpheus
 
-# Create venv with Python 3.12 (required — 3.14 wheels not available yet)
-py -3.12 -m venv .venv
+# Create venv with Python 3.12
+py -V:3.12 -m venv .venv
 .\.venv\Scripts\python -m pip install -e .
 
 # Pull the LLM model (or any Ollama model; set it in Settings)

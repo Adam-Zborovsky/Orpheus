@@ -20,7 +20,7 @@ if (-not $repo) {
 
 $pythonw = Join-Path $repo ".venv\Scripts\pythonw.exe"
 if (-not (Test-Path $pythonw)) {
-    throw "pythonw.exe not found at $pythonw — create the venv first (py -3.12 -m venv .venv)."
+    throw "pythonw.exe not found at $pythonw — create the venv first (py -V:3.12 -m venv .venv)."
 }
 
 # Whisper (Hugging Face) model cache on E:. Keep this in sync with the E: path

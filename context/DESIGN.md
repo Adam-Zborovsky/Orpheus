@@ -14,7 +14,7 @@ the pill is specified functionally only; a later pass picks the look.
 
 | Area | Decision |
 |---|---|
-| Tech stack | Python 3.11+ / PySide6 (Qt), single language end-to-end |
+| Tech stack | Python 3.12 / PySide6 (Qt), single language end-to-end |
 | STT engine | faster-whisper (CTranslate2) — Whisper large-v3 on CUDA |
 | LLM cleanup | Local via Ollama (`localhost:11434`), behind a provider interface |
 | Trigger mode | Toggle — tap hotkey to start, tap again to stop |

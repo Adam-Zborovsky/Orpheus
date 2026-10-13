@@ -2,7 +2,7 @@
 name = "orpheus"
 version = "0.1.0"
 description = "Local voice dictation: hotkey -> Whisper -> LLM cleanup -> type into the focused app"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "PySide6>=6.7",
     "faster-whisper>=1.0",
