@@ -1,107 +1,52 @@
-# Orpheus — Local GPU Voice Dictation
+# Orpheus: active product and implementation constraints
 
-A private, self-hosted alternative to Wispr Flow. Global hotkey → capture mic →
-local Whisper transcription on the GPU → local LLM cleanup → type the polished
-text into whatever app has focus. A small floating pill with a voice visualizer
-shows state. Everything runs on-machine; nothing is sent to the cloud by default.
+Updated 23 October 2026. This document describes the hardening/polish candidate. The July implementation plan is historical; the [current plan](../docs/superpowers/plans/2026-10-23-orpheus-hardening-and-polish.md) and user decisions supersede its GPU-first warnings, deferred UI work, and automatic commits.
 
-Status: **design** (2026-07-02). Visual/aesthetic design deliberately deferred —
-the pill is specified functionally only; a later pass picks the look.
+## Product
 
----
+Windows tray-based local dictation for daily use. Keep Python 3.12, native PySide6 widgets, faster-whisper/CTranslate2, sounddevice, pynput, and SQLite. CPU is a supported intentional backend. NVIDIA CUDA is optional. Do not replace the stack or transcription backend without an explicit product decision.
 
-## Confirmed decisions
+Default sequence: shortcut starts capture; shortcut stops; Whisper transcribes; optional Ollama cleanup falls back to raw text; history persists usable text when enabled; guarded delivery inserts text into the intended application. The current user's custom settings must be preserved.
 
-| Area | Decision |
-|---|---|
-| Tech stack | Python 3.12 / PySide6 (Qt), single language end-to-end |
-| STT engine | faster-whisper (CTranslate2) — Whisper large-v3 on CUDA |
-| LLM cleanup | Local via Ollama (`localhost:11434`), behind a provider interface |
-| Trigger mode | Toggle — tap hotkey to start, tap again to stop |
-| Text delivery | SendInput Unicode type-out; clipboard-paste as fallback |
-| Language | English + Hebrew (Whisper auto-detect, with force option) |
-| v1 extras | Custom vocabulary/dictionary, editable cleanup prompts, history log |
-| Deferred to v2 | Multiple modes/profiles (Email / Code / Slack, etc.) |
+User-confirmed recording policy: keep the full first 30 minutes and automatically stop/transcribe at the limit. Never discard the beginning silently or write temporary audio without a separate decision. The capture limit is configurable from 60 to 1800 seconds; default 1800.
 
-Rationale in brief: Python keeps the GPU/ML stack (faster-whisper, torch) and the
-UI in one process — no IPC bridge to a JS frontend. faster-whisper gives the best
-quality/speed/effort balance on a decent GPU. Local Ollama keeps the pipeline
-fully private and free per token; the provider interface makes swapping in a
-cloud gateway (e.g. LiteLLM) a config change, not a rewrite.
+## Runtime ownership
 
----
+- The Qt owner thread manages recording state, readiness, resource replacement, recovery actions, and shutdown.
+- Each session has an ID, cancellation event, copied settings, and foreground-window/process identity captured at start. Stale results/progress/limit signals cannot affect a later recording.
+- One transcription pipeline is active, with at most one pending current session. Cancellation skips later stages and delivery; model/STT/cleanup calls already in progress may need to unwind.
+- Model construction uses a lock. Preload events carry model generation. Finished QThreads release their callable references and are disposed after completion.
+- Settings that replace live resources wait until consumers finish. Deferred apply failures are reported back to restore active persisted settings. Old HTTP clients/database connections close only after consumers release them.
+- Quit blocks new work, cancels delivery, stops capture/hotkeys, and waits asynchronously for jobs. Do not terminate running QThreads or close their dependencies early.
 
-## Architecture
+## Recovery and privacy
 
-Ten focused units, each with one responsibility and independently testable.
+Persist raw/final text once before delivery when history is enabled. Failed/partial delivery or history failure keeps an explicit recovery copy. History-disabled recovery stays in memory until exit; no transcript/audio files are created for it. A full recovery queue blocks new recording rather than silently replacing text.
 
-| Unit | Responsibility | Key dependency |
-|---|---|---|
-| `AppController` | State machine + orchestration; runs STT/LLM off the UI thread | Qt `QThread` worker |
-| `HotkeyManager` | Global toggle hotkey (tap on / tap off) | `pynput` |
-| `AudioCapture` | Mic → 16 kHz mono ring buffer, device selection, live RMS levels | `sounddevice` (PortAudio) |
-| `Transcriber` | faster-whisper large-v3 on CUDA; VAD; vocab as `initial_prompt`; `en`/`he`/auto | `faster-whisper` |
-| `Cleanup` | LLM formatting via provider interface; default Ollama | `httpx` |
-| `TextInjector` | SendInput Unicode type-out; clipboard-paste fallback | `ctypes` |
-| `SettingsStore` | Load/save config (hotkey, device, model, language, prompts, vocab, delivery) | TOML file |
-| `HistoryStore` | Local transcript log + word-count stats | SQLite |
-| `PillOverlay` | Frameless, always-on-top pill; states idle→listening→transcribing→done/error; visualizer fed by RMS. **Appearance is placeholder.** | PySide6 |
-| `TrayIcon` + `SettingsWindow` | Tray menu (settings/quit) + Qt settings UI | PySide6 |
+Explicit cancellation before delivery discards the session. Partial insertion after cancellation remains recoverable. Copy/retry/dismiss actions are explicit. Retry arms a copy, then the existing hotkey confirms insertion after the user focuses a destination outside Orpheus. Partial retries require acknowledgement. Quitting with unfinished or unsaved work requires confirmation.
 
-### Data flow
+The history schema remains unchanged for this release. Search/paging/export use existing columns. Retention deletion is manual, previewed, confirmed, and transactional. Never delete live history, change Startup, or migrate a live database as an automatic verification step.
 
-```
-hotkey tap
-  → AudioCapture starts, PillOverlay shows "listening" (live visualizer)
-hotkey tap
-  → AudioCapture stops, PillOverlay shows "transcribing"
-  → Transcriber (faster-whisper) with vocab + language  →  raw text
-  → Cleanup (Ollama) with editable prompt + vocab       →  final text
-  → TextInjector types final text into the focused app
-  → HistoryStore saves the entry
-  → PillOverlay fades out
-```
+Diagnostics use a dedicated allowlisted logger, capped at four 1 MiB files. Never attach a general file handler that persists arbitrary third-party messages, exception strings, transcripts, prompts, vocabulary, or credentials.
 
-Threading: the audio stream runs in a PortAudio callback; STT + LLM run in a
-worker `QThread`; the pill updates via Qt signals so the UI thread never blocks.
+The default Ollama URL is local. A user-configured remote endpoint can receive transcript text; do not claim unconditional offline behavior. Model weights may download at first load. Benchmarking must use local cached models and explicit local audio.
 
----
+## Native UI direction
 
-## Error handling
+Use the user's Windows appearance and Segoe UI/native control typography. Keep visual changes restrained and focused on daily dictation feedback. Compose accessibility, layout, typography, colors, copy, and UI skills directly in Qt. Stitch is available as an alternative concept path but is not needed for the agreed restructuring.
 
-- **No CUDA / model load fails** → fall back to CPU int8 compute, warn in pill/tray.
-- **Ollama not running / cleanup fails** → inject the **raw** transcript and notify;
-  never lose the captured words.
-- **Mic unavailable / empty transcript / focus lost mid-inject** → surface as a
-  pill error state. Nothing is silently dropped.
+Settings groups Input, Transcription, Cleanup, and History/Delivery. Its form scrolls while Save/Cancel remain visible. Show a readable shortcut with an explicit syntax editor, preserve modifier-only bindings, and keep advanced CPU controls collapsed. Vocabulary belongs to transcription and stays usable with cleanup off. Show active backend/precision and pending settings without a CPU warning.
 
----
+The pill labels recording, transcription, cleanup, insertion, completion, cancellation, errors, and shutdown. Use an opaque dark surface `#14161A` and small-text foreground `#F8FAFC` (measured 17.31:1). Provide meaningful accessible names and announcements, honour Windows reduced-motion preferences, avoid focus activation, and anchor to the intended target's monitor with a primary-screen fallback. Full errors and text recovery belong in a persistent readable window accessible from the tray.
 
-## Settings (v1)
+History is a searchable/paged native master/detail view with raw/final text, word count, and processing-time metadata. Existing `duration_s` means pipeline processing time, not spoken duration. Never silently reinterpret old rows.
 
-- Global hotkey binding
-- Microphone device selection
-- Whisper model size + compute type (large-v3 default; smaller for speed)
-- Language mode: auto / force English / force Hebrew
-- Cleanup: enabled toggle, Ollama model name, editable system prompt(s)
-- Custom vocabulary / dictionary (fed to Whisper `initial_prompt` and LLM prompt)
-- Text delivery method: type-out (default) or clipboard-paste
-- History: enabled toggle
+## Known delivery boundaries
 
-Config stored as TOML on disk and editable via the settings window.
+Win32 focus checking and sending input are not atomic. The target check identifies a top-level HWND/process, not a particular text field. It cannot guarantee safety against same-window field changes or the narrow check/send race. Do not steal focus or automatically replay partial insertion.
 
----
+Paste supports plain-text clipboard contents and refuses rich/image formats. It restores previous text only when the clipboard sequence still matches; the check/restore race remains. Elevated destinations may reject synthetic input. Keep explicit copy recovery available.
 
-## Testing
+## Verification
 
-- **pytest** on pure logic: cleanup-prompt building, vocabulary injection, config
-  round-trip (load/save), history writes — with audio/STT/LLM mocked.
-- **Manual smoke tests** for STT accuracy and text injection (hardware/OS dependent).
-
----
-
-## Out of scope for v1
-
-- Multiple modes/profiles (v2)
-- Aesthetic/visual design of the pill (later pass)
-- Cloud LLM routing (interface is ready; not wired or exposed in v1)
+Tests use the repository venv, temporary data, fake hardware/OS boundaries, bounded Qt event loops, and native/offscreen widget captures. No dev servers/watchers, commits, or live dictation interruption. Real microphone/insertion/Windows accessibility and a controlled relaunch use the user's checklist. CPU speed/quality decisions require representative bilingual measurements; the current precision/model/thread settings remain intact until a measured choice is approved.

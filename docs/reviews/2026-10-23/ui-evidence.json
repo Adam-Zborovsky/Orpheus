@@ -1,0 +1,151 @@
+{
+  "platform": "windows",
+  "style": "windows11",
+  "settings": {
+    "size": [
+      514,
+      856
+    ],
+    "minimumSizeHint": [
+      514,
+      672
+    ],
+    "font": "Segoe UI,9,-1,5,400,0,0,0,0,0,0,0,0,0,0,1,,0,0",
+    "cleanupEnabled": false,
+    "controls": {
+      "_hotkey": {
+        "name": "Hotkey",
+        "enabled": true,
+        "geometry": [
+          104,
+          11,
+          399,
+          26
+        ]
+      },
+      "_device": {
+        "name": "Microphone",
+        "enabled": true,
+        "geometry": [
+          104,
+          43,
+          399,
+          26
+        ]
+      },
+      "_model": {
+        "name": "Whisper model",
+        "enabled": true,
+        "geometry": [
+          104,
+          75,
+          399,
+          26
+        ]
+      },
+      "_compute": {
+        "name": "Compute type",
+        "enabled": true,
+        "geometry": [
+          104,
+          107,
+          399,
+          26
+        ]
+      },
+      "_cpu_threads": {
+        "name": "CPU threads",
+        "enabled": true,
+        "geometry": [
+          104,
+          139,
+          399,
+          26
+        ]
+      },
+      "_language": {
+        "name": "Language",
+        "enabled": true,
+        "geometry": [
+          104,
+          171,
+          399,
+          26
+        ]
+      },
+      "_ollama_url": {
+        "name": "Ollama URL",
+        "enabled": true,
+        "geometry": [
+          104,
+          233,
+          399,
+          26
+        ]
+      },
+      "_ollama_model": {
+        "name": "Ollama model",
+        "enabled": true,
+        "geometry": [
+          104,
+          265,
+          399,
+          26
+        ]
+      },
+      "_prompt": {
+        "name": "Cleanup prompt",
+        "enabled": true,
+        "geometry": [
+          104,
+          297,
+          399,
+          192
+        ]
+      },
+      "_vocabulary": {
+        "name": "Vocabulary",
+        "enabled": true,
+        "geometry": [
+          104,
+          527,
+          399,
+          192
+        ]
+      },
+      "_delivery": {
+        "name": "Text delivery",
+        "enabled": true,
+        "geometry": [
+          104,
+          725,
+          399,
+          26
+        ]
+      }
+    },
+    "requested480x500Actual": [
+      480,
+      672
+    ]
+  },
+  "historyAccessibleNames": {
+    "_list": "",
+    "_preview_box": "",
+    "_copy_button": "Copy to Clipboard"
+  },
+  "pill": {
+    "accessibleName": "",
+    "accessibleValue": "",
+    "role": "Role.Client",
+    "fullErrorWidth": 405,
+    "pillWidth": 72
+  },
+  "pillLightBackground": [
+    170,
+    170,
+    171
+  ],
+  "errorContrastOnLight": 1.25,
+  "bodyPaletteContrast": 13.77
+}

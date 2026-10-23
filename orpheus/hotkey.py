@@ -31,7 +31,12 @@ class HotkeyManager:
         if self._listener is not None:
             return
         self._listener = keyboard.GlobalHotKeys({self.hotkey: self._on_toggle})
-        self._listener.start()
+        try:
+            self._listener.start()
+        except Exception:
+            self._listener.stop()
+            self._listener = None
+            raise
 
     def stop(self) -> None:
         if self._listener is not None:
@@ -41,8 +46,19 @@ class HotkeyManager:
     def rebind(self, hotkey: str) -> None:
         if not validate_hotkey(hotkey):
             raise ValueError(f"invalid hotkey: {hotkey!r}")
+        if hotkey == self.hotkey:
+            return
         was_running = self._listener is not None
+        previous = self.hotkey
         self.stop()
         self.hotkey = hotkey
         if was_running:
-            self.start()
+            try:
+                self.start()
+            except Exception as exc:
+                self.hotkey = previous
+                try:
+                    self.start()
+                except Exception as restore_exc:
+                    raise RuntimeError("The hotkey could not be activated or restored. Choose another shortcut in Settings.") from restore_exc
+                raise RuntimeError("The new hotkey could not be activated. The previous shortcut is still active.") from exc

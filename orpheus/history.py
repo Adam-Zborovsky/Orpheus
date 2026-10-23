@@ -61,6 +61,77 @@ class HistoryStore:
             ).fetchall()
         return [HistoryEntry(*row) for row in rows]
 
+    @staticmethod
+    def _search_pattern(query: str) -> str:
+        if not isinstance(query, str):
+            raise TypeError("query must be a string")
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    def search(self, query: str = "", limit: int = 50,
+               offset: int = 0) -> list[HistoryEntry]:
+        if type(limit) is not int or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        pattern = self._search_pattern(query)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, ts, raw_text, final_text, duration_s, word_count "
+                "FROM entries WHERE raw_text LIKE ? ESCAPE '\\' "
+                "OR final_text LIKE ? ESCAPE '\\' "
+                "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                (pattern, pattern, limit, offset),
+            ).fetchall()
+        return [HistoryEntry(*row) for row in rows]
+
+    def count(self, query: str = "") -> int:
+        pattern = self._search_pattern(query)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM entries "
+                "WHERE raw_text LIKE ? ESCAPE '\\' "
+                "OR final_text LIKE ? ESCAPE '\\'",
+                (pattern, pattern),
+            ).fetchone()
+        return int(row[0])
+
+    def count_before(self, cutoff: float) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM entries WHERE ts < ?", (cutoff,),
+            ).fetchone()
+        return int(row[0])
+
+    def delete_before(self, cutoff: float, expected_count: int) -> int:
+        """Delete only the reviewed older-entry count, in one write transaction."""
+        if type(expected_count) is not int or expected_count < 0:
+            raise ValueError("expected_count must be a non-negative integer")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM entries WHERE ts < ?", (cutoff,),
+                ).fetchone()
+                current_count = int(row[0])
+                if current_count != expected_count:
+                    raise ValueError(
+                        "Older history changed after review; review the count again"
+                    )
+                cursor = self._conn.execute(
+                    "DELETE FROM entries WHERE ts < ?", (cutoff,),
+                )
+                deleted = int(cursor.rowcount)
+                if deleted != expected_count:
+                    raise ValueError(
+                        "Older history changed during deletion; nothing was deleted"
+                    )
+                self._conn.commit()
+                return deleted
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def stats(self) -> dict:
         with self._lock:
             entries, words = self._conn.execute(

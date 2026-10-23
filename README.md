@@ -1,241 +1,95 @@
 # Orpheus
 
-**Local voice dictation — private, GPU-accelerated, bilingual. Speak, and your words are transcribed by Whisper on your own machine and polished by a local LLM before being typed into whatever app has focus.**
+Local voice dictation for Windows. Press a global shortcut, speak, then press it again to transcribe and insert text into the original application. Whisper runs on your CPU or an optional NVIDIA GPU. Optional cleanup uses Ollama, locally by default.
 
-<p align="left">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" />
-  <img alt="PySide6" src="https://img.shields.io/badge/PySide6-6.7-41CD52?logo=qt&logoColor=white" />
-  <img alt="faster-whisper" src="https://img.shields.io/badge/faster--whisper-large--v3-FF6F00?logo=openai&logoColor=white" />
-  <img alt="Ollama" src="https://img.shields.io/badge/Ollama-local-000000?logo=ollama&logoColor=white" />
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-11-0078D6?logo=windows&logoColor=white" />
-</p>
+## Daily use
 
----
+- The default shortcut is `Ctrl+Alt+Space`; existing custom shortcuts, including modifier-only `Ctrl+Alt`, are preserved.
+- Press once to record and again to stop. During transcription or cleanup, the shortcut cancels that session.
+- Recordings retain their beginning and stop automatically at **30 minutes**, then transcribe the complete captured audio. No rolling five-minute overwrite.
+- Successful CPU startup is silent. The tray and Settings show model readiness and the active backend/precision.
+- Right-click the tray icon for **Settings**, **Transcription history**, **Recover text / errors**, and **Quit**.
 
-## Screenshots
+![Settings](docs/reviews/2026-10-23/after/settings.png)
 
-| Pill overlay | Settings |
-|:---:|:---:|
-| ![Pill overlay](assets/pill-design.png) | ![Settings](assets/settings-page.png) |
-| Floating status pill — shows listening / transcribing state with a live level visualizer. | Settings window for hotkey, mic device, model size, language, cleanup prompt, vocabulary, and text delivery method. |
+![Status states on light and dark backgrounds](docs/reviews/2026-10-23/after/pill-states.png)
 
----
+The captures above use synthetic data and native Windows widgets.
 
-## Highlights
+## Recovery and delivery
 
-- **100% local & private** — Everything runs on your machine: Whisper transcription, LLM cleanup, audio capture. No API keys, no cloud dependency, no data leaves your device.
-- **GPU-accelerated transcription** — Uses `faster-whisper` (CTranslate2) with CUDA acceleration. Falls back gracefully to CPU `int8` when no GPU is available, with a visible warning — no silent performance cliff.
-- **Bilingual by default** — English and Hebrew support with Whisper auto-detection. A force-language option locks to either language. Custom vocabulary feeds into both the STT initial prompt and the LLM cleanup prompt, so names, technical terms, and domain jargon are transcribed correctly.
-- **LLM cleanup pipeline** — A local Ollama model polishes the raw transcript: fixes punctuation, capitalization, filler words, and false starts while preserving the speaker's exact meaning. The cleanup prompt is fully editable — tune it for your writing style.
-- **Words are never lost** — If the LLM is down or the API call fails, the raw transcript is injected immediately. No silent drops, no "try again later."
-- **Toggle hotkey** — Tap `Ctrl+Alt+Space` (configurable) to start dictating; tap again to stop. A frameless, always-on-top pill shows live mic levels during capture and a spinner during processing, then fades out.
-- **Two injection methods** — SendInput Unicode type-out for speed (default), or clipboard-paste for apps that reject synthetic keystrokes. Handles Unicode surrogates, newline normalization, and chunked delivery to avoid overwhelming the target app.
-- **Transcript history** — SQLite-backed log of every dictation session, with timestamps, durations, word counts, and both raw and final text. Browse the last 50 entries in the tray menu.
-- **System tray app** — Lives in the Windows notification area. Right-click for Settings, History, and Quit. No console window — runs silently via `pythonw.exe`.
-- **Silent autostart** — Deploy via a Startup-folder shortcut (no admin) or Task Scheduler (with elevation). Starts at login with no terminal flash.
+A completed transcript is saved to history before automatic insertion when history is enabled. A failed insertion, changed destination, or history-write failure leaves a recovery copy available from the tray. Cleanup failures fall back to the raw transcript.
 
----
+Recovery offers explicit copy, dismiss, and retry actions. Retry is armed first: focus the intended text field and press the dictation shortcut to confirm insertion. If insertion was partial, review the destination before retrying to avoid duplicates. Unsaved recovery copies require acknowledgement before dismissal; quitting with unfinished or unsaved work asks for confirmation.
 
-## Architecture
+With history disabled, recovery copies exist **only in memory until Orpheus exits**. Audio is not saved to disk. Model failures cannot reconstruct speech that was never successfully transcribed. Explicit cancellation before delivery discards that session; cancellation after partial insertion keeps a recovery copy. Already inserted text is not automatically removed.
 
-Ten focused modules, each independently testable and single-responsibility.
+The intended top-level window and owning process are captured when recording starts and checked before delivery and between type-out chunks. If the target changes, automatic insertion stops. This does not identify individual fields inside one window, and checking focus plus sending input is not an atomic Windows operation.
 
-```
-                  ┌──────────────────┐
-   Ctrl+Alt+Space │  HotkeyManager   │  pynput global listener
-        ────────▶ │  (hotkey.py)     │
-                  └────────┬─────────┘
-                           │ toggle()
-                  ┌────────▼─────────┐
-                  │  AppController   │  State machine + orchestration
-                  │  (app.py)        │  (idle → listening → processing)
-                  └──┬────┬────┬─────┘
-                     │    │    │
-           ┌─────────▼┐   │    └──────────────┐
-           │ Audio    │   │                   │
-           │ Capture  │   │  Qt Signals       │
-           │ (audio)  │   │  ┌────────────┐   │
-           └────┬─────┘   │  │ PillOverlay│   │
-                │         │  │ (pill.py)  │   │
-      numpy     │         │  └────────────┘   │
-      array     │         │  ┌────────────┐   │
-           ┌────▼─────────▼┐ │ TrayIcon    │   │
-           │  Transcriber  │ │ (tray.py)   │   │
-           │ (transcriber) │ └────────────┘   │
-           │ faster-whisper│                   │
-           │ large-v3      │  ┌────────────┐   │
-           └────┬──────────┘  │ Settings   │   │
-                │             │ Window     │   │
-          raw   │             │ (settings  │   │
-          text  │             │ _window.py)│   │
-           ┌────▼──────────┐  └────────────┘   │
-           │   Cleanup     │                   │
-           │  (cleanup.py) │  Ollama local     │
-           │  LLM provider │  HTTP API         │
-           └────┬──────────┘                   │
-                │                              │
-         final  │                              │
-         text   │                              │
-           ┌────▼──────────┐                   │
-           │ TextInjector  │  SendInput        │
-           │ (injector.py) │  ctypes Win32     │
-           └────┬──────────┘                   │
-                │                              │
-           ┌────▼──────────┐                   │
-           │ HistoryStore  │  SQLite           │
-           │ (history.py)  │                   │
-           └───────────────┘                   │
-                                               │
-        ┌──────────────────────────────────────┘
-        │  Focused app (Notepad, VS Code, Slack, etc.)
-        │  receives the polished text
-        └─
-```
+Type-out handles Unicode, Hebrew, emoji, and newlines. Paste mode supports **plain-text clipboard contents**; it refuses to replace images or rich clipboard formats. It restores prior text only if the clipboard sequence still belongs to the operation. A narrow race between sequence checking and restoration remains. Elevated applications may reject either delivery method; use recovery copy/paste when necessary.
 
-### Data flow
+## Settings and history
 
-```
-hotkey tap (start)
-  → AudioCapture opens mic stream, PillOverlay shows "listening" (live level visualizer)
+Settings groups Input, Transcription, Cleanup, and History/Delivery in a scrollable native form with fixed Save/Cancel buttons. Advanced transcription controls are collapsed by default. Vocabulary applies to Whisper even when cleanup is off. Settings preserves explicit CPU/CUDA choices and unedited options, validates values, and reports save failures without closing the dialog.
 
-hotkey tap (stop)
-  → AudioCapture returns numpy buffer, PillOverlay shows "processing"
-  → QThread worker runs the pipeline:
-      1. Transcriber (faster-whisper) with vocab + language  →  raw text
-      2. Cleanup (Ollama) with editable prompt + vocab        →  final text
-      3. TextInjector types final text into the focused app
-      4. HistoryStore saves the entry
-  → PillOverlay shows "done" briefly, then fades out
-```
+Changes that replace resources currently in use wait until the active work finishes. A rejected deferred shortcut change restores the active configuration. If a global hotkey cannot start, the tray remains available so Settings can repair it.
 
-### Error handling
-
-| Failure | Behavior |
-|---|---|
-| No CUDA / model load fails | Falls back to CPU `int8`; tray notice warns of slower transcription |
-| Ollama not running / cleanup fails | Raw transcript is injected immediately; notification explains the failure |
-| Mic unavailable / empty transcript | Pill shows error state; nothing is silently dropped |
-| SendInput blocked (elevated target) | Clipboard-paste fallback available in Settings |
-
----
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| **Language** | Python 3.12 |
-| **GUI** | PySide6 (Qt for Python) |
-| **STT Engine** | faster-whisper (CTranslate2) — Whisper large-v3-turbo |
-| **LLM Cleanup** | Ollama (llama3.1:8b default, any model supported) |
-| **Audio I/O** | sounddevice (PortAudio) |
-| **Hotkey** | pynput (global keyboard listener) |
-| **Text injection** | ctypes SendInput Unicode (Win32 API) |
-| **Clipboard** | pyperclip (fallback injection method) |
-| **HTTP** | httpx (Ollama API calls) |
-| **Config** | TOML on disk (`%APPDATA%\Orpheus\config.toml`) |
-| **History** | SQLite (`%APPDATA%\Orpheus\history.sqlite3`) |
-| **Testing** | pytest (11 test files, 759 lines) |
-| **Build** | Hatchling (PEP 621) |
-
----
-
-## Requirements
-
-- **Windows 11**, Python 3.12 (required by the prebuilt CTranslate2 wheel)
-- [Ollama](https://ollama.com) running locally for LLM cleanup (optional — without it the raw transcript is injected)
-- NVIDIA GPU for CUDA acceleration (optional — falls back to CPU `int8` automatically; pick a smaller model like `small`/`medium` for speed on CPU)
-- Microphone
-
----
+History supports search over raw and final text, pages beyond the latest 200 entries, raw/final comparison, word counts, selected-transcript UTF-8 export, and explicitly reviewed deletion of older entries. **Processing time** describes transcription/cleanup work, not the length of the spoken recording. Entries are kept by default; upgrading does not automatically delete history.
 
 ## Setup
 
-```powershell
-# Clone and enter
-git clone https://github.com/Adam-Zborovsky/Orpheus.git
-cd Orpheus
+Windows and Python **3.12** are required by this project's dependency range. The current environment uses PySide6 6.12.0, faster-whisper 1.2.1, and CTranslate2 4.8.3.
 
-# Create venv with Python 3.12
+```powershell
 py -V:3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -e .
-
-# Pull the LLM model (or any Ollama model; set it in Settings)
-ollama pull llama3.1:8b
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m orpheus
 ```
 
-First run downloads the Whisper model (~3 GB for large-v3-turbo) to the Hugging Face cache.
+The first model load may download weights to the Hugging Face cache. Later transcription runs locally. CPU is supported on AMD machines; NVIDIA CUDA is optional. Existing model, precision, and thread settings are retained. All logical threads are the current Auto behavior, not a measured claim that this is fastest.
 
----
+For optional cleanup, run Ollama locally and install the selected model, for example `ollama pull llama3.1:8b`. Cleanup is configurable: choosing a remote Ollama URL sends transcript text to that endpoint. Keep a local URL when local-only processing is intended.
 
-## Usage
+## Startup and local data
+
+The existing Startup-folder installation is a shortcut to this checkout's `.venv\Scripts\pythonw.exe -m orpheus`. It is not a bundled Orpheus EXE. Source changes take effect on the next launch. See [deployment instructions](deploy/README.md) for the existing shortcut and Task Scheduler scripts; review their environment-path settings before running them.
+
+Data under `%APPDATA%\Orpheus`:
+
+| File | Contents |
+| --- | --- |
+| `config.toml` | Validated settings; saves use atomic file replacement. |
+| `history.sqlite3` | Local plaintext raw/final transcripts when history is enabled. |
+| `orpheus.log`, `.1`–`.3` | Up to four 1 MiB diagnostic files containing allowlisted event categories and scalar timing/backend fields. No transcript, audio, prompt, vocabulary, or arbitrary exception text is written to these logs. |
+
+An invalid config is preserved until explicitly repaired and saved. Its repair form starts with history and cleanup disabled and does not activate a hotkey before repair. Turning history off stops new entries; it does not erase existing entries.
+
+Important configuration values:
+
+| Field | Default | Values |
+| --- | --- | --- |
+| `device` | `auto` | `auto`, `cpu`, `cuda`; explicit CUDA errors remain visible. |
+| `model_size` | `large-v3-turbo` | Supported model alias, custom model ID, or local path. |
+| `compute_type` | `float16` | Backend-supported precision; CPU falls back to int8 if needed. |
+| `cpu_threads` | `0` | 0 means all logical CPUs; 1–128 is explicit. |
+| `num_workers` | `1` | 1–16; pipeline scheduling remains bounded. |
+| `max_recording_seconds` | `1800` | 60–1800; stop and transcribe at the limit. |
+| `language` | `auto` | `auto`, `en`, `he`. |
+| `cleanup_enabled` | `true` | Existing saved choice is preserved. |
+| `delivery` | `type` | `type` or guarded plain-text `paste`. |
+| `history_enabled` | `true` | Existing saved choice is preserved. |
+
+## Implementation and validation
+
+A single Qt process owns the tray, settings, history, and overlay. PortAudio captures audio. QThread jobs perform model loading and transcription/cleanup/delivery. Each session has its own identity, cancellation token, settings snapshot, and target. Obsolete results cannot reset a newer recording. There is one active transcription pipeline plus at most one pending current session; model construction is synchronized. Finished jobs release their captured resources and are deleted through Qt's lifecycle.
+
+Quit cancels pending delivery and keeps the event loop responsive until uninterruptible backend work finishes. It then closes clients/history and exits. It never forcibly terminates a running QThread.
 
 ```powershell
-.\.venv\Scripts\python -m orpheus
+.\.venv\Scripts\python.exe -m pytest -q
+git diff --check
 ```
 
-- Tap **`Ctrl+Alt+Space`** to start dictating — a floating pill appears with live mic levels.
-- Tap again to stop — the polished text is typed into whatever app has focus.
-- Right-click the system tray icon for **Settings**, **History**, or **Quit**.
+Automated tests use temporary data, fake audio/models/input APIs, finite Qt event-loop checks, and offscreen UI. They cover failure recovery, worker lifetime, cancellation, capture limits, configuration, history, accessibility metadata, and startup wiring. Real microphone accuracy, screen-reader operation, elevated windows, and actual insertion/focus behavior require the [relaunch checklist](docs/reviews/2026-10-23/IMPLEMENTATION.md).
 
-### Silent autostart
-
-Drop a shortcut in your Startup folder (no admin required):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\install-startup-shortcut.ps1
-```
-
-Or use Task Scheduler for delayed startup + recovery (requires elevated PowerShell):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\install-startup-task.ps1
-```
-
-Both use `pythonw.exe` — no console window, runs straight to the tray.
-
----
-
-## Configuration
-
-Open Settings from the tray menu or edit `%APPDATA%\Orpheus\config.toml` directly.
-
-| Setting | Default | Description |
-|---|---|---|
-| Hotkey | `<ctrl>+<alt>+<space>` | Global toggle hotkey (pynput `HotKey.parse` syntax) |
-| Microphone | System default | Select a specific input device |
-| Model size | `large-v3-turbo` | Whisper model (trade speed vs accuracy) |
-| Device | `auto` | `auto` / `cuda` / `cpu` |
-| Compute type | `float16` | `float16` for GPU, `int8` for CPU |
-| CPU threads | `0` (all cores) | Threads for CPU transcription |
-| Language | `auto` | `auto` / `en` / `he` |
-| Cleanup enabled | `true` | Toggle LLM post-processing |
-| Ollama model | `llama3.1:8b` | Any Ollama model |
-| Cleanup prompt | _(editable)_ | System prompt that controls cleanup behavior |
-| Vocabulary | _(empty)_ | Custom words fed to both STT and LLM |
-| Text delivery | `type` | `type` (SendInput) or `paste` (clipboard) |
-| History | `true` | Enable/disable transcript logging |
-
----
-
-## Tests
-
-```powershell
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\python -m pytest -v
-```
-
-11 test files covering settings, history, cleanup, transcription, audio, hotkeys, text injection, the pill overlay, the app controller, and the history window. Pure-logic units are tested with pytest; hardware-dependent units (mic stream, SendInput, global hotkeys) are verified via the manual smoke checklist.
-
----
-
-## Notes
-
-- **AMD GPUs** (no CUDA): Transcription automatically runs on CPU `int8` — a tray notice appears at startup. A Vulkan/whisper.cpp backend is a possible v2 swap.
-- **Text injection**: SendInput Unicode type-out handles surrogate pairs and newline normalization. Switch to clipboard-paste in Settings for apps that reject synthetic keystrokes (e.g., some admin-elevated windows).
-- **HF_HOME**: The Task Scheduler installer sets `HF_HOME=E:\A_I\huggingface` so model downloads land on the same drive as your LLM models. Edit the installer script to change this.
-
----
-
-## License
-
-MIT
+CPU tuning has a [local-only benchmark harness](docs/benchmarks/README.md). No CPU tuning defaults have been changed, and no recognition-quality or speed improvement is claimed without measurements on representative English/Hebrew audio.

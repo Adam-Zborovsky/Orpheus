@@ -1,5 +1,7 @@
 import os
 import threading
+from PySide6.QtCore import QRect
+from PySide6.QtGui import QColor, QGuiApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -53,27 +55,39 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-def test_only_done_and_error_carry_text(qapp):
-    pill = PillOverlay()
+def test_each_controller_state_has_a_readable_label(qapp):
+    pill = PillOverlay(reduced_motion=True)
     pill.set_state("listening")
-    assert pill._display_text() == ""
+    assert pill._display_text() == "Recording"
     pill.set_state("processing")
-    assert pill._display_text() == ""  # animation only, no "Transcribing" text
+    assert pill._state == "transcribing"  # processing is an alias
+    assert pill._display_text() == "Transcribing"
+    pill.set_state("cleaning")
+    assert pill._display_text() == "Cleaning up"
+    pill.set_state("delivering")
+    assert pill._display_text() == "Inserting text"
     pill.set_state("done")
     assert pill._display_text() == "Done"
+    pill.set_state("cancelled")
+    assert pill._display_text() == "Cancelled"
+    pill.set_state("shutting_down")
+    assert pill._display_text() == "Shutting down"
     pill.set_state("idle")
 
 
-def test_error_message_shown(qapp):
-    pill = PillOverlay()
-    pill.set_message("Microphone unavailable")
+def test_error_is_concise_and_full_detail_and_recovery_route_are_available(qapp):
+    pill = PillOverlay(reduced_motion=True)
+    message = "Microphone unavailable: select another input device"
+    pill.set_message(message)
     pill.set_state("error")
-    assert pill._display_text() == "Microphone unavailable"
+    assert pill._display_text() == "Needs attention"
+    assert message in pill.toolTip()
+    assert "Recover text from the tray" in pill.accessibleDescription()
     pill.set_state("idle")
 
 
 def test_appear_animation_fades_in(qapp):
-    pill = PillOverlay()
+    pill = PillOverlay(reduced_motion=False)
     pill.set_state("listening")
     assert pill.isVisible()
     assert pill.windowOpacity() == 0.0  # starts transparent
@@ -84,7 +98,7 @@ def test_appear_animation_fades_in(qapp):
 
 
 def test_idle_plays_close_animation_then_hides(qapp):
-    pill = PillOverlay()
+    pill = PillOverlay(reduced_motion=False)
     pill.set_state("listening")
     for _ in range(15):
         pill._tick()
@@ -97,7 +111,7 @@ def test_idle_plays_close_animation_then_hides(qapp):
 
 
 def test_bars_ease_toward_levels(qapp):
-    pill = PillOverlay()
+    pill = PillOverlay(reduced_motion=False)
     pill.set_state("listening")
     pill.set_level(0.02)  # loud -> target 1.0 at the newest bar
     before = pill._shown[-1]
@@ -115,7 +129,7 @@ def test_cross_thread_level_delivery(qapp):
     class Emitter(QObject):
         sig = Signal(float)
 
-    pill = PillOverlay()
+    pill = PillOverlay(reduced_motion=True)
     pill.set_state("listening")
     emitter = Emitter()
     emitter.sig.connect(pill.set_level)
@@ -125,4 +139,147 @@ def test_cross_thread_level_delivery(qapp):
     thread.join()
     qapp.processEvents()
     assert max(pill._levels) > 0.9  # loud samples must draw visibly tall bars
+    pill.set_state("idle")
+
+
+def test_accessible_name_updates_for_status_without_level_announcements(qapp, monkeypatch):
+    from PySide6.QtGui import QAccessible
+
+    announcements = []
+    original = QAccessible.updateAccessibility
+    monkeypatch.setattr(QAccessible, "updateAccessibility",
+                        staticmethod(lambda event: announcements.append(event)))
+    pill = PillOverlay(reduced_motion=True)
+    pill.set_state("listening")
+    assert pill.accessibleName() == "Orpheus status: Recording"
+    state_events = len(announcements)
+    pill.set_level(0.2)
+    assert len(announcements) == state_events
+    pill.set_state("transcribing")
+    assert pill.accessibleName() == "Orpheus status: Transcribing"
+    assert len(announcements) > state_events
+    monkeypatch.setattr(QAccessible, "updateAccessibility", original)
+    pill.set_state("idle")
+
+
+def test_reduced_motion_uses_static_states_and_no_animation_timer(qapp):
+    pill = PillOverlay(reduced_motion=True)
+    pill.set_state("listening")
+    assert pill.isVisible()
+    assert pill.windowOpacity() == 1.0
+    assert not pill._anim.isActive()
+    pill.set_level(0.5)
+    assert pill._shown[-1] == 1.0
+    assert not pill._anim.isActive()
+    pill.set_state("idle")
+    assert not pill.isVisible()
+
+
+def test_static_error_stops_entrance_timer_and_does_not_expire(qapp):
+    pill = PillOverlay(reduced_motion=False)
+    pill.set_message("Backend unavailable")
+    pill.set_state("error")
+    for _ in range(8):
+        pill._tick()
+    assert not pill._anim.isActive()
+    assert pill.isVisible()
+    assert pill._display_text() == "Needs attention"
+    pill.set_state("idle")
+
+
+def _luminance(color):
+    values = []
+    for value in (color.red(), color.green(), color.blue()):
+        channel = value / 255
+        values.append(channel / 12.92 if channel <= 0.04045
+                      else ((channel + 0.055) / 1.055) ** 2.4)
+    return sum(weight * value for weight, value in
+               zip((0.2126, 0.7152, 0.0722), values))
+
+
+def test_opaque_status_surface_keeps_small_text_contrast_on_light_and_dark_desktops(
+        qapp):
+    from orpheus.ui.pill import _SURFACE, _TEXT
+
+    light_wallpaper = QColor(255, 255, 255)
+    dark_wallpaper = QColor(0, 0, 0)
+    assert _SURFACE.alpha() == 255
+    for wallpaper in (light_wallpaper, dark_wallpaper):
+        effective_surface = QColor(
+            round(_SURFACE.red() * _SURFACE.alphaF()
+                  + wallpaper.red() * (1 - _SURFACE.alphaF())),
+            round(_SURFACE.green() * _SURFACE.alphaF()
+                  + wallpaper.green() * (1 - _SURFACE.alphaF())),
+            round(_SURFACE.blue() * _SURFACE.alphaF()
+                  + wallpaper.blue() * (1 - _SURFACE.alphaF())),
+        )
+        high, low = sorted((_luminance(_TEXT), _luminance(effective_surface)),
+                           reverse=True)
+        assert (high + 0.05) / (low + 0.05) >= 4.5
+
+
+class _FakeSignal:
+    def connect(self, callback):
+        self.callback = callback
+
+    def disconnect(self, callback):
+        if getattr(self, "callback", None) == callback:
+            self.callback = None
+
+
+class _FakeScreen:
+    def __init__(self, rect):
+        self.rect = rect
+        self.availableGeometryChanged = _FakeSignal()
+
+    def availableGeometry(self):
+        return self.rect
+
+
+def test_target_monitor_position_is_clamped_and_removed_monitor_falls_back(
+        qapp, monkeypatch):
+    primary = _FakeScreen(QRect(0, 0, 1280, 720))
+    target = _FakeScreen(QRect(1280, 0, 300, 180))
+    screens = [primary, target]
+    monkeypatch.setattr(QGuiApplication, "screens", staticmethod(lambda: screens))
+    monkeypatch.setattr(QGuiApplication, "primaryScreen", staticmethod(lambda: primary))
+
+    pill = PillOverlay(reduced_motion=True)
+    pill.set_target_screen(target)
+    geometry = target.availableGeometry()
+    assert geometry.left() <= pill.x()
+    assert pill.x() + pill.width() - 1 <= geometry.right()
+    assert geometry.top() <= pill.y()
+    assert pill.y() + pill.height() - 1 <= geometry.bottom()
+
+    screens.remove(target)
+    pill._on_screen_removed(target)
+    assert pill._target_screen is primary
+    assert pill.x() + pill.width() - 1 <= primary.availableGeometry().right()
+
+
+def test_missing_target_monitor_uses_primary_screen(qapp, monkeypatch):
+    primary = _FakeScreen(QRect(0, 0, 640, 360))
+    missing = _FakeScreen(QRect(3000, 0, 300, 180))
+    monkeypatch.setattr(QGuiApplication, "screens", staticmethod(lambda: [primary]))
+    monkeypatch.setattr(QGuiApplication, "primaryScreen", staticmethod(lambda: primary))
+    pill = PillOverlay(reduced_motion=True)
+    pill.set_target_screen(missing)
+    assert pill._target_screen is primary
+    assert primary.availableGeometry().left() <= pill.x()
+    assert pill.x() + pill.width() <= primary.availableGeometry().right() + 1
+
+
+def test_motion_preference_is_refreshed_between_states(qapp, monkeypatch):
+    import orpheus.ui.pill as module
+
+    enabled = {"value": True}
+    monkeypatch.setattr(module, "_client_area_animations_enabled", lambda: enabled["value"])
+    pill = PillOverlay()
+    pill.set_state("listening")
+    assert pill._anim.isActive()
+    enabled["value"] = False
+    pill.set_state("transcribing")
+    assert not pill._anim.isActive()
+    assert pill.windowOpacity() == 1.0
     pill.set_state("idle")

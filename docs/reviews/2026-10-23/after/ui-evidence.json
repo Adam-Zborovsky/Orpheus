@@ -1,0 +1,28 @@
+{
+  "platform": "windows",
+  "style": "windows11",
+  "font": "Segoe UI",
+  "settingsSmallSize": [
+    500,
+    500
+  ],
+  "saveButtonWithinDialog": true,
+  "vocabularyEnabledWithCleanupOff": true,
+  "controls": {
+    "_hotkey": "Shortcut syntax",
+    "_device": "Microphone",
+    "_model": "Whisper model",
+    "_vocabulary": "Vocabulary",
+    "_compute": "Compute type",
+    "_language": "Language"
+  },
+  "historyCount": "Showing 1–50 of 205 matching transcriptions",
+  "historyNames": {
+    "_list": "Transcription history results",
+    "_raw_box": "Raw transcript",
+    "_preview_box": "Final transcript",
+    "_search": "Search transcript history"
+  },
+  "pillSmallTextContrast": 17.31,
+  "captureNote": "Hidden native widgets, synthetic settings/text/data; no running app or desktop screenshot captured."
+}

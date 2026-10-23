@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -76,6 +77,7 @@ class Transcriber:
         self.active_compute_type: str | None = None
         self._factory = model_factory or self._default_factory
         self._model = None
+        self._load_lock = threading.Lock()
 
     def _default_factory(self, model_size: str, device: str, compute_type: str):
         from faster_whisper import WhisperModel  # heavy import, deferred
@@ -87,6 +89,10 @@ class Transcriber:
 
     def load(self) -> str:
         """Load the model; returns the device actually used ('cuda' or 'cpu')."""
+        with self._load_lock:
+            return self._load_locked()
+
+    def _load_locked(self) -> str:
         if self._model is not None:
             return self.active_device
         last_exc: Exception | None = None

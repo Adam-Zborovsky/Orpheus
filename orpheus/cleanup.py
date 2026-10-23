@@ -34,6 +34,9 @@ class OllamaProvider:
         response.raise_for_status()
         return response.json()["message"]["content"].strip()
 
+    def close(self) -> None:
+        self._client.close()
+
 
 def build_system_prompt(prompt_template: str, vocabulary: list[str]) -> str:
     prompt = prompt_template.rstrip()
@@ -56,6 +59,11 @@ class Cleanup:
 
     def __init__(self, provider: LLMProvider):
         self._provider = provider
+
+    def close(self) -> None:
+        close = getattr(self._provider, "close", None)
+        if close is not None:
+            close()
 
     def run(self, raw_text: str, prompt_template: str,
             vocabulary: list[str]) -> CleanupResult:

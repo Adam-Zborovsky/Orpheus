@@ -1,0 +1,37 @@
+{
+  "injectionFailure": {
+    "ok": false,
+    "error": "Could not type text: SendInput was blocked",
+    "resultStillHasText": true,
+    "historyRows": 0
+  },
+  "staleCancelledEmptyResult": {
+    "cancelledFlag": false,
+    "error": "Nothing was heard",
+    "newSessionBefore": "listening",
+    "newSessionAfter": "idle"
+  },
+  "ringBufferScaled7SecondsInto5SecondCap": [
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0
+  ],
+  "concurrentModelLoadFactoryCalls": 2,
+  "microphoneStartRetry": {
+    "firstError": "Device unavailable",
+    "secondAttemptSilentlyReturned": true,
+    "calls": [
+      "construct",
+      "start"
+    ],
+    "staleStreamRetained": true
+  },
+  "finishedWorkerRetention": {
+    "sessions": 20,
+    "activeThreadList": 0,
+    "retainedWorkerChildren": 20,
+    "retainedCapturedAudioBytes": 1280000
+  }
+}

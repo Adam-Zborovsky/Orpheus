@@ -1,27 +1,51 @@
-"""Floating status pill. Appearance is a functional placeholder (per DESIGN.md).
-
-Compact and low-opacity. The whole pill fades+slides in when it appears and
-fades+slides out when it leaves (done, error timeout, or idle). States:
-listening -> smoothed level bars only; processing -> small pulsing dots (no
-text); done -> "Done" over a soft dark frosted backdrop; error -> red text.
-"""
+"""Compact, accessible status pill for Orpheus dictation state."""
 from __future__ import annotations
 
+import ctypes
 import math
+import sys
 from collections import deque
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Slot
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
+from PySide6.QtGui import (
+    QAccessible, QAccessibleEvent, QColor,
+    QGuiApplication, QPainter, QPen, QScreen,
+)
 from PySide6.QtWidgets import QWidget
 
-_BAR_COUNT = 13
+try:
+    from PySide6.QtGui import QAccessibleAnnouncementEvent
+except ImportError:  # Qt 6.7 still exposes the name/description change events.
+    QAccessibleAnnouncementEvent = None
+
+_BAR_COUNT = 11
 _TICK_MS = 33
-_APPEAR_S = 0.18
-_CLOSE_S = 0.22
-_DONE_HOLD_S = 0.9
-_ERROR_HOLD_S = 3.0
-_SLIDE_PX = 6.0
-_PAD = 10
+_APPEAR_S = 0.16
+_CLOSE_S = 0.18
+_DONE_HOLD_MS = 1_200
+_CANCELLED_HOLD_MS = 1_100
+_SLIDE_PX = 4.0
+_PAD = 12
+
+# Opaque surface makes the small status label independent of the wallpaper or
+# application behind it. Text/background contrast is over 15:1.
+_SURFACE = QColor(20, 22, 26)
+_EDGE = QColor(126, 132, 142)
+_TEXT = QColor(248, 250, 252)
+_ACCENT = QColor(137, 231, 160)
+_ERROR_ACCENT = QColor(255, 138, 128)
+
+_LABELS = {
+    "listening": "Recording",
+    "processing": "Transcribing",
+    "transcribing": "Transcribing",
+    "cleaning": "Cleaning up",
+    "delivering": "Inserting text",
+    "done": "Done",
+    "error": "Needs attention",
+    "cancelled": "Cancelled",
+    "shutting_down": "Shutting down",
+}
 
 
 def _ease_out(p: float) -> float:
@@ -29,15 +53,27 @@ def _ease_out(p: float) -> float:
     return 1.0 - (1.0 - p) ** 3
 
 
+def _client_area_animations_enabled() -> bool:
+    """Read Windows' client-area animation preference without changing it."""
+    if sys.platform != "win32":
+        return True
+    try:
+        from ctypes import wintypes
+
+        enabled = wintypes.BOOL()
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            0x1042, 0, ctypes.byref(enabled), 0  # SPI_GETCLIENTAREAANIMATION
+        )
+        return bool(enabled.value) if ok else False
+    except (AttributeError, OSError):
+        return False
+
+
 class LevelNormalizer:
-    """Auto-gain for the visualizer: scales RMS against a decaying rolling peak.
+    """Auto-gain for microphone level bars, with a decaying rolling peak."""
 
-    Mic gain varies by orders of magnitude between devices (this machine's
-    ambient RMS measured ~7e-5); any fixed linear scale leaves the bars flat.
-    """
-
-    MIN_PEAK = 0.002  # ~ -54 dB: below this is treated as silence, not signal
-    DECAY = 0.985     # per-block peak decay (~1 s half-life at typical block rates)
+    MIN_PEAK = 0.002
+    DECAY = 0.985
 
     def __init__(self):
         self._peak = self.MIN_PEAK
@@ -48,78 +84,194 @@ class LevelNormalizer:
 
 
 class PillOverlay(QWidget):
-    WIDTH, HEIGHT = 72, 26
+    WIDTH, HEIGHT = 176, 36
 
-    def __init__(self):
+    def __init__(self, reduced_motion: bool | None = None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint
                          | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFixedSize(self.WIDTH, self.HEIGHT)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWindowTitle("Orpheus status")
+        self._motion_override = reduced_motion
+        self._reduced_motion = (not _client_area_animations_enabled()
+                                if reduced_motion is None else bool(reduced_motion))
         self._state = "idle"
         self._message = ""
+        self._target_screen: QScreen | None = None
+        self._screen_geometry_slot = None
         self._levels: deque[float] = deque([0.0] * _BAR_COUNT, maxlen=_BAR_COUNT)
-        self._shown: list[float] = [0.0] * _BAR_COUNT  # eased display values
+        self._shown: list[float] = [0.0] * _BAR_COUNT
         self._normalizer = LevelNormalizer()
-        self._t = 0.0          # seconds since the current state began
-        self._appear_t = _APPEAR_S  # appear-animation clock (full = appeared)
+        self._t = 0.0
+        self._appear_t = _APPEAR_S
         self._closing = False
         self._close_t = 0.0
         self._anim = QTimer(self)
         self._anim.setInterval(_TICK_MS)
         self._anim.timeout.connect(self._tick)
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(lambda: self.set_state("idle"))
 
-    # -- slots -----------------------------------------------------------------
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.screenRemoved.connect(self._on_screen_removed)
+        self.setAccessibleName("Orpheus status: Idle")
+        self.setAccessibleDescription("Dictation status")
+
+    # -- public slots ---------------------------------------------------------
 
     @Slot(str)
     def set_state(self, state: str) -> None:
+        if self._motion_override is None:
+            self._reduced_motion = not _client_area_animations_enabled()
+            if self._reduced_motion:
+                self._anim.stop()
+                self._appear_t = _APPEAR_S
+                self.setWindowOpacity(1.0)
+        if state == "processing":
+            state = "transcribing"
+        if state not in _LABELS and state != "idle":
+            raise ValueError(f"Unknown pill state: {state}")
         if state == "idle":
-            if self.isVisible() and not self._closing:
+            self._hold_timer.stop()
+            if self._reduced_motion:
+                self._anim.stop()
+                self._closing = False
+                self.hide()
+                self.setWindowOpacity(1.0)
+                self._state = "idle"
+                self._set_idle_accessibility()
+            elif self.isVisible() and not self._closing:
                 self._begin_close()
             return
+
         was_hidden = not self.isVisible() or self._closing
+        previous = self._state
         self._state = state
         self._t = 0.0
         self._closing = False
         self._close_t = 0.0
+        self._hold_timer.stop()
         if state == "listening":
-            self._message = ""
+            self._levels.clear()
             self._levels.extend([0.0] * _BAR_COUNT)
             self._shown = [0.0] * _BAR_COUNT
             self._normalizer = LevelNormalizer()
+        if state in {"done", "cancelled"}:
+            delay = _DONE_HOLD_MS if state == "done" else _CANCELLED_HOLD_MS
+            self._hold_timer.start(delay)
         if was_hidden:
-            self._appear_t = 0.0
-            self.setWindowOpacity(0.0)
+            self._appear_t = 0.0 if not self._reduced_motion else _APPEAR_S
+            self.setWindowOpacity(1.0 if self._reduced_motion else 0.0)
             self._reposition()
             self.show()
-        if not self._anim.isActive():
+        if not self._reduced_motion and not self._anim.isActive():
             self._anim.start()
+        elif self._reduced_motion:
+            self._anim.stop()
+        self._publish_accessible_state(previous != state)
         self.update()
 
     @Slot(float)
     def set_level(self, value: float) -> None:
-        # Targets only; the animation tick eases the bars toward them.
-        self._levels.append(self._normalizer.level(value))
+        normalized = self._normalizer.level(max(0.0, float(value)))
+        self._levels.append(normalized)
+        if self._reduced_motion and self._state == "listening":
+            self._shown = list(self._levels)
+            self.update()
 
     @Slot(str)
     def set_message(self, text: str) -> None:
         self._message = text
+        if self._state == "error":
+            description = self._error_description()
+            self.setToolTip(description)
+            self.setAccessibleDescription(description)
+            QAccessible.updateAccessibility(
+                QAccessibleEvent(self, QAccessible.Event.DescriptionChanged)
+            )
         self.update()
 
-    # -- internals -------------------------------------------------------------
+    def set_target_screen(self, screen: QScreen | None) -> None:
+        """Place the pill on the requested monitor, or the primary fallback."""
+        if self._target_screen is not None and self._screen_geometry_slot is not None:
+            try:
+                self._target_screen.availableGeometryChanged.disconnect(
+                    self._screen_geometry_slot
+                )
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        screens = QGuiApplication.screens()
+        selected = screen if screen is not None and screen in screens else None
+        if selected is None:
+            selected = QGuiApplication.primaryScreen()
+        self._target_screen = selected
+        self._screen_geometry_slot = None
+        if selected is not None:
+            try:
+                self._screen_geometry_slot = self._on_available_geometry_changed
+                selected.availableGeometryChanged.connect(self._screen_geometry_slot)
+            except (AttributeError, RuntimeError, TypeError):
+                self._screen_geometry_slot = None
+        self._reposition()
 
-    def _display_text(self) -> str:
-        if self._state == "done":
-            return "Done"
+    # -- accessible status and placement -------------------------------------
+
+    def _error_description(self) -> str:
+        details = self._message.strip() or "An error needs attention."
+        return f"{details} Open Recover text from the tray for details and recovery."
+
+    def _publish_accessible_state(self, announce: bool) -> None:
+        label = _LABELS[self._state]
+        self.setAccessibleName(f"Orpheus status: {label}")
+        description = (self._error_description() if self._state == "error"
+                       else f"Dictation status: {label}.")
+        self.setAccessibleDescription(description)
         if self._state == "error":
-            return self._message or "Error"
-        return ""  # listening and processing carry no text
+            self.setToolTip(description)
+        else:
+            self.setToolTip("")
+        if announce:
+            QAccessible.updateAccessibility(
+                QAccessibleEvent(self, QAccessible.Event.NameChanged)
+            )
+            if QAccessibleAnnouncementEvent is not None:
+                event = QAccessibleAnnouncementEvent(self, label)
+                event.setPoliteness(
+                    QAccessible.AnnouncementPoliteness.Assertive
+                    if self._state == "error"
+                    else QAccessible.AnnouncementPoliteness.Polite
+                )
+                QAccessible.updateAccessibility(event)
+
+    def _on_screen_removed(self, screen: QScreen) -> None:
+        if screen is self._target_screen or screen == self._target_screen:
+            self.set_target_screen(None)
+
+    def _on_available_geometry_changed(self, *args) -> None:
+        self._reposition()
 
     def _reposition(self) -> None:
-        geo = QGuiApplication.primaryScreen().availableGeometry()
-        self.move(geo.center().x() - self.WIDTH // 2,
-                  geo.bottom() - self.HEIGHT - 24)
+        screen = self._target_screen
+        available = QGuiApplication.screens()
+        if screen is None or screen not in available:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        desired_x = geo.left() + (geo.width() - self.WIDTH) // 2
+        desired_y = geo.bottom() - self.HEIGHT - 16 + 1
+        max_x = max(geo.left(), geo.right() - self.WIDTH + 1)
+        max_y = max(geo.top(), geo.bottom() - self.HEIGHT + 1)
+        x = min(max(geo.left(), desired_x), max_x)
+        y = min(max(geo.top(), desired_y), max_y)
+        self.move(x, y)
+
+    # -- animation ------------------------------------------------------------
 
     def _begin_close(self) -> None:
         self._closing = True
@@ -133,6 +285,14 @@ class PillOverlay(QWidget):
         self.setWindowOpacity(1.0)
         self._state = "idle"
         self._closing = False
+        self._set_idle_accessibility()
+
+    def _set_idle_accessibility(self) -> None:
+        self.setAccessibleName("Orpheus status: Idle")
+        self.setAccessibleDescription("Dictation status")
+        QAccessible.updateAccessibility(
+            QAccessibleEvent(self, QAccessible.Event.NameChanged)
+        )
 
     def _opacity(self) -> float:
         appear = _ease_out(self._appear_t / _APPEAR_S)
@@ -140,19 +300,16 @@ class PillOverlay(QWidget):
         return appear * (1.0 - close)
 
     def _tick(self) -> None:
+        if self._reduced_motion:
+            self._anim.stop()
+            return
         dt = _TICK_MS / 1000.0
         self._t += dt
         if self._appear_t < _APPEAR_S:
             self._appear_t = min(_APPEAR_S, self._appear_t + dt)
-        # Ease bars toward their targets: snappy attack, soft release.
         for i, target in enumerate(self._levels):
             k = 0.55 if target > self._shown[i] else 0.25
             self._shown[i] += (target - self._shown[i]) * k
-        if not self._closing:
-            if self._state == "done" and self._t > _DONE_HOLD_S:
-                self._begin_close()
-            elif self._state == "error" and self._t > _ERROR_HOLD_S:
-                self._begin_close()
         if self._closing:
             self._close_t += dt
             if self._close_t >= _CLOSE_S:
@@ -160,81 +317,82 @@ class PillOverlay(QWidget):
                 return
         self.setWindowOpacity(self._opacity())
         self.update()
+        if (not self._closing and self._appear_t >= _APPEAR_S
+                and self._state not in {
+                    "listening", "transcribing", "cleaning", "delivering"
+                }):
+            self._anim.stop()
 
     # -- painting --------------------------------------------------------------
+
+    def _display_text(self) -> str:
+        return "" if self._state == "idle" else _LABELS.get(self._state, "")
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Slide: rise in while appearing, sink out while closing.
-        appear = _ease_out(self._appear_t / _APPEAR_S)
-        close = _ease_out(self._close_t / _CLOSE_S) if self._closing else 0.0
-        painter.translate(0, (1.0 - appear) * _SLIDE_PX + close * _SLIDE_PX)
+        if not self._reduced_motion:
+            appear = _ease_out(self._appear_t / _APPEAR_S)
+            close = _ease_out(self._close_t / _CLOSE_S) if self._closing else 0.0
+            painter.translate(0, (1.0 - appear) * _SLIDE_PX + close * _SLIDE_PX)
 
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        # Lower fill opacity than before, but a thin edge keeps the pill
-        # reading as one solid shape instead of a soft translucent blur.
-        painter.setBrush(QColor(6, 6, 8, 80))
-        painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
-        painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+        painter.setBrush(_SURFACE)
+        painter.setPen(QPen(_EDGE, 1))
+        painter.drawRoundedRect(rect, 18, 18)
 
         font = painter.font()
-        font.setPointSizeF(8.0)
+        font.setPointSizeF(9.0)
+        font.setWeight(font.Weight.DemiBold)
         painter.setFont(font)
+        painter.setPen(_TEXT)
+        label = self._display_text()
 
         if self._state == "listening":
-            self._paint_bars(painter, rect)
-        elif self._state == "processing":
-            self._paint_dots(painter, rect)
-        elif self._state == "done":
-            self._paint_done(painter, rect)
+            text_rect = QRectF(rect.left() + _PAD, rect.top(), 66, rect.height())
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter
+                             | Qt.AlignmentFlag.AlignLeft, label)
+            self._paint_bars(painter, QRectF(rect.right() - 74, rect.top(),
+                                             64, rect.height()))
         elif self._state == "error":
-            painter.setPen(QColor(255, 99, 99))
-            text = painter.fontMetrics().elidedText(
-                self._display_text(), Qt.TextElideMode.ElideRight,
-                int(rect.width()) - 8)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_ERROR_ACCENT)
+            painter.drawEllipse(QPointF(rect.left() + 15, rect.center().y()), 3.5, 3.5)
+            painter.setPen(_TEXT)
+            painter.drawText(rect.adjusted(27, 0, -8, 0),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             label)
+        elif self._state == "done":
+            painter.setPen(_ACCENT)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+        else:
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+            if self._state in {"transcribing", "processing", "cleaning", "delivering"}:
+                self._paint_status_mark(painter, rect)
 
     def _paint_bars(self, painter: QPainter, rect: QRectF) -> None:
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(235, 235, 240, 235))
-        pitch = (rect.width() - 2 * _PAD) / _BAR_COUNT
-        base_x = rect.left() + _PAD
+        painter.setBrush(_TEXT)
+        pitch = rect.width() / _BAR_COUNT
         mid_y = rect.center().y()
-        max_h = rect.height() - 6
+        max_h = rect.height() - 14
         for i, level in enumerate(self._shown):
-            h = max(2.0, level * max_h)
+            height = max(2.0, level * max_h)
             painter.drawRoundedRect(
-                QRectF(base_x + i * pitch + (pitch - 2.5) / 2, mid_y - h / 2,
-                       2.5, h), 1.25, 1.25)
+                QRectF(rect.left() + i * pitch + (pitch - 2.2) / 2,
+                       mid_y - height / 2, 2.2, height), 1.1, 1.1
+            )
 
-    def _paint_dots(self, painter: QPainter, rect: QRectF) -> None:
+    def _paint_status_mark(self, painter: QPainter, rect: QRectF) -> None:
         painter.setPen(Qt.PenStyle.NoPen)
-        cx, cy = rect.center().x(), rect.center().y()
-        spacing, radius = 9.0, 2.6
-        phase = self._t * 5.0
-        for i in (-1, 0, 1):
-            wave = 0.5 + 0.5 * math.sin(phase - i * 0.9)
-            painter.setBrush(QColor(235, 235, 240, int(70 + 165 * wave)))
-            painter.drawEllipse(QPointF(cx + i * spacing, cy), radius, radius)
-
-    def _paint_done(self, painter: QPainter, rect: QRectF) -> None:
-        progress = min(1.0, self._t / 0.2)  # quick fade-in of the badge + word
-        # Soft, blurry-looking dark backdrop: stacked translucent rounded rects
-        # of decreasing size fake a blurred panel behind the word.
-        painter.setPen(Qt.PenStyle.NoPen)
-        for i in range(5):
-            inset = i * 0.9
-            painter.setBrush(QColor(0, 0, 0, int(28 * progress)))
-            r = rect.adjusted(inset, inset, -inset, -inset)
-            painter.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-        # Soft green glow of the word (offset copies) + crisp text on top.
-        green = QColor(150, 235, 170)
-        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            painter.setPen(QColor(green.red(), green.green(), green.blue(),
-                                  int(45 * progress)))
-            painter.drawText(rect.translated(dx, dy),
-                             Qt.AlignmentFlag.AlignCenter, "Done")
-        painter.setPen(QColor(green.red(), green.green(), green.blue(),
-                              int(255 * progress)))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Done")
+        painter.setBrush(QColor(190, 198, 209))
+        if self._reduced_motion:
+            painter.drawEllipse(QPointF(rect.right() - 15, rect.center().y()), 2.2, 2.2)
+            return
+        phase = self._t * 4.5
+        for index in range(3):
+            alpha = int(100 + 155 * (0.5 + 0.5 * math.sin(phase - index * 0.8)))
+            painter.setBrush(QColor(190, 198, 209, alpha))
+            painter.drawEllipse(
+                QPointF(rect.right() - 14 - index * 7, rect.center().y()), 2.0, 2.0
+            )

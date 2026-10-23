@@ -1,9 +1,40 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
-from orpheus.app import DictationStateMachine, State, run_pipeline
+from orpheus.app import AppController, DictationStateMachine, State, run_pipeline
 from orpheus.settings import Settings
+
+
+@pytest.mark.parametrize("device", ["auto", "cpu"])
+def test_cpu_preload_does_not_notify(monkeypatch, tmp_path, device):
+    monkeypatch.setattr(AppController, "_build_components", lambda self: None)
+    controller = AppController(Settings(device=device), data_dir=tmp_path)
+    controller._transcriber = SimpleNamespace(active_compute_type="float32")
+    notices, errors, states = [], [], []
+    controller.notice.connect(notices.append)
+    controller.error.connect(errors.append)
+    controller.state_changed.connect(states.append)
+
+    controller._on_preloaded("cpu")
+
+    assert notices == []
+    assert errors == []
+    assert states == []
+
+
+def test_preload_failure_still_surfaces_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(AppController, "_build_components", lambda self: None)
+    controller = AppController(Settings(), data_dir=tmp_path)
+    errors, states = [], []
+    controller.error.connect(errors.append)
+    controller.state_changed.connect(states.append)
+
+    controller._on_preloaded(RuntimeError("model unavailable"))
+
+    assert errors == ["Whisper model failed to load: model unavailable"]
+    assert states == ["error"]
 
 
 # --- state machine -----------------------------------------------------------
@@ -208,3 +239,63 @@ def test_pipeline_not_cancelled_by_default():
     result = run_pipeline(AUDIO, Settings(), FakeTranscriber(), FakeCleanup(),
                           FakeInjector(), None)
     assert result.cancelled is False
+
+
+def test_failed_delivery_has_already_saved_history():
+    history = FakeHistory()
+
+    class Blocked:
+        def inject(self, text):
+            assert history.rows == [("hello world", "Hello, world.")]
+            raise RuntimeError("blocked")
+
+    result = run_pipeline(AUDIO, Settings(), FakeTranscriber(), FakeCleanup(),
+                          Blocked(), history)
+    assert not result.ok
+    assert result.final_text == "Hello, world."
+    assert len(history.rows) == 1
+
+
+def test_history_failure_still_delivers_and_retains_recovery_flag():
+    class BrokenHistory:
+        def add(self, *args, **kwargs):
+            raise OSError("disk full")
+
+    injector = FakeInjector()
+    result = run_pipeline(AUDIO, Settings(), FakeTranscriber(), FakeCleanup(),
+                          injector, BrokenHistory())
+    assert result.ok
+    assert result.history_failed
+    assert result.final_text == "Hello, world."
+    assert injector.injected == ["Hello, world."]
+    assert "until Orpheus exits" in result.notice
+
+
+def test_unexpected_cleanup_exception_falls_back_to_raw():
+    class BrokenCleanup:
+        def run(self, *args):
+            raise RuntimeError("unexpected provider failure")
+
+    injector = FakeInjector()
+    result = run_pipeline(AUDIO, Settings(cleanup_enabled=True), FakeTranscriber(),
+                          BrokenCleanup(), injector, None)
+    assert result.ok
+    assert result.final_text == "hello world"
+    assert injector.injected == ["hello world"]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_cancelled_empty_or_failed_transcription_is_cancelled(failure):
+    cancelled = {"value": False}
+
+    class OldTranscriber:
+        def transcribe(self, *args, **kwargs):
+            cancelled["value"] = True
+            if failure:
+                raise RuntimeError("old error")
+            return SimpleNamespace(text="")
+
+    result = run_pipeline(AUDIO, Settings(), OldTranscriber(), None, None, None,
+                          is_cancelled=lambda: cancelled["value"])
+    assert result.cancelled
+    assert result.error is None

@@ -35,12 +35,22 @@ def _fallback_icon() -> QIcon:
 class TrayIcon(QSystemTrayIcon):
     settings_requested = Signal()
     history_requested = Signal()
+    recovery_requested = Signal()
+    cancel_retry_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(app_icon(), parent)
         self.setToolTip("Orpheus — voice dictation")
         menu = QMenu()
+        self._status_action = menu.addAction("Loading model")
+        self._status_action.setEnabled(False)
+        self._recovery_action = menu.addAction("Recover text / errors…")
+        self._recovery_action.triggered.connect(self.recovery_requested.emit)
+        self._cancel_retry_action = menu.addAction("Cancel retry")
+        self._cancel_retry_action.setVisible(False)
+        self._cancel_retry_action.triggered.connect(self.cancel_retry_requested.emit)
+        menu.addSeparator()
         settings_action = QAction("Settings…", menu)
         settings_action.triggered.connect(self.settings_requested.emit)
         menu.addAction(settings_action)
@@ -57,3 +67,15 @@ class TrayIcon(QSystemTrayIcon):
     def show_notice(self, message: str) -> None:
         self.showMessage("Orpheus", message,
                          QSystemTrayIcon.MessageIcon.Information, 4000)
+
+    def show_error(self, message: str) -> None:
+        self.showMessage("Orpheus — needs attention", message,
+                         QSystemTrayIcon.MessageIcon.Warning, 6000)
+
+    def set_status(self, status: str) -> None:
+        self._status_action.setText(status)
+        self.setToolTip(f"Orpheus — {status}")
+        self._cancel_retry_action.setVisible(status.startswith("Retry armed"))
+
+    def set_recovery_count(self, count: int) -> None:
+        self._recovery_action.setText(f"Recover text / errors… ({count})" if count else "Recover text / errors…")

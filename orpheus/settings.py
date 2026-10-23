@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import tomli_w
 
@@ -55,6 +57,7 @@ class Settings:
     compute_type: str = "float16"  # float16 | int8
     cpu_threads: int = 0  # 0 = use all logical cores
     num_workers: int = 1  # >1 only helps concurrent transcriptions
+    max_recording_seconds: int = 1800
     language: str = "auto"  # auto | en | he
     cleanup_enabled: bool = True
     ollama_url: str = "http://localhost:11434"
@@ -65,19 +68,141 @@ class Settings:
     history_enabled: bool = True
 
 
+class SettingsError(ValueError):
+    """A settings file or value cannot safely be used."""
+
+
+_DEVICES = {"auto", "cuda", "cpu"}
+_COMPUTE_TYPES = {
+    "auto", "default", "float32", "float16", "bfloat16", "int8",
+    "int8_float32", "int8_float16", "int8_bfloat16", "int16",
+}
+_LANGUAGES = {"auto", "en", "he"}
+_DELIVERY = {"type", "paste"}
+
+
+def validate_settings(settings: Settings) -> None:
+    """Raise ``SettingsError`` with the field name for invalid settings."""
+    if not isinstance(settings, Settings):
+        raise SettingsError("settings: expected a Settings instance")
+
+    string_fields = (
+        "hotkey", "input_device", "model_size", "device", "compute_type",
+        "language", "ollama_url", "ollama_model", "cleanup_prompt", "delivery",
+    )
+    for name in string_fields:
+        if not isinstance(getattr(settings, name), str):
+            raise SettingsError(f"{name}: expected a string")
+
+    for name in ("cleanup_enabled", "history_enabled"):
+        if type(getattr(settings, name)) is not bool:
+            raise SettingsError(f"{name}: expected true or false")
+
+    if type(settings.cpu_threads) is not int or not 0 <= settings.cpu_threads <= 128:
+        raise SettingsError("cpu_threads: expected an integer from 0 to 128")
+    if type(settings.num_workers) is not int or not 1 <= settings.num_workers <= 16:
+        raise SettingsError("num_workers: expected an integer from 1 to 16")
+    if (type(settings.max_recording_seconds) is not int
+            or not 60 <= settings.max_recording_seconds <= 1800):
+        raise SettingsError(
+            "max_recording_seconds: expected an integer from 60 to 1800"
+        )
+
+    for name, value, choices in (
+        ("device", settings.device, _DEVICES),
+        ("compute_type", settings.compute_type, _COMPUTE_TYPES),
+        ("language", settings.language, _LANGUAGES),
+        ("delivery", settings.delivery, _DELIVERY),
+    ):
+        if value not in choices:
+            expected = ", ".join(sorted(choices))
+            raise SettingsError(f"{name}: expected one of {expected}")
+
+    for name in ("model_size", "ollama_model"):
+        if not getattr(settings, name).strip():
+            raise SettingsError(f"{name}: must not be empty")
+
+    if not settings.hotkey.strip():
+        raise SettingsError("hotkey: must not be empty")
+    try:
+        from .hotkey import validate_hotkey
+        hotkey_valid = validate_hotkey(settings.hotkey)
+    except Exception as exc:
+        raise SettingsError("hotkey: could not be parsed") from exc
+    if not hotkey_valid:
+        raise SettingsError("hotkey: invalid pynput hotkey syntax")
+
+    if not isinstance(settings.vocabulary, list):
+        raise SettingsError("vocabulary: expected a list of strings")
+    if any(not isinstance(word, str) for word in settings.vocabulary):
+        raise SettingsError("vocabulary: expected a list of strings")
+
+    try:
+        parsed_url = urlsplit(settings.ollama_url)
+        valid_url = (parsed_url.scheme in {"http", "https"}
+                     and bool(parsed_url.hostname)
+                     and not any(character.isspace()
+                                 for character in settings.ollama_url)
+                     and parsed_url.port != 0)
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        raise SettingsError("ollama_url: expected a valid http:// or https:// URL")
+
+
 def default_config_path() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home() / ".config")
     return Path(base) / "Orpheus" / "config.toml"
 
 
 def load_settings(path: Path) -> Settings:
-    if not path.exists():
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return Settings()
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise SettingsError(f"config: invalid TOML ({exc})") from exc
+    except (OSError, UnicodeError) as exc:
+        raise SettingsError(f"config: could not read settings file ({type(exc).__name__})") from exc
+
+    if not isinstance(data, dict):
+        raise SettingsError("config: expected a TOML table of settings")
     valid = {f.name for f in dataclasses.fields(Settings)}
-    return Settings(**{k: v for k, v in data.items() if k in valid})
+    values = {k: v for k, v in data.items() if k in valid}
+    try:
+        settings = Settings(**values)
+    except TypeError as exc:
+        # The dataclass constructor is deliberately simple, but guard future
+        # schema changes with a stable, user-facing error boundary.
+        raise SettingsError(f"config: invalid settings fields ({exc})") from exc
+    validate_settings(settings)
+    return settings
 
 
 def save_settings(path: Path, settings: Settings) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(tomli_w.dumps(dataclasses.asdict(settings)), encoding="utf-8")
+    validate_settings(settings)
+    try:
+        content = tomli_w.dumps(dataclasses.asdict(settings)).encode("utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f".{path.name}.", suffix=".tmp",
+                dir=path.parent, delete=False,
+            ) as temporary:
+                temp_path = Path(temporary.name)
+                temporary.write(content)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temp_path, path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+    except OSError as exc:
+        raise SettingsError(
+            f"config: could not save settings ({type(exc).__name__})"
+        ) from exc

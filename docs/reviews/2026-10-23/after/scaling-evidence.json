@@ -1,0 +1,19 @@
+{
+  "scaleFactor": 2.0,
+  "availableGeometry": [
+    0,
+    0,
+    1280,
+    696
+  ],
+  "settingsActualSize": [
+    500,
+    500
+  ],
+  "saveFooterWithinDialog": true,
+  "historyActualSize": [
+    640,
+    440
+  ],
+  "historyCloseWithinDialog": true
+}

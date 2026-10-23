@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import numpy as np
 import pytest
@@ -123,6 +125,55 @@ def test_load_is_idempotent():
     t.load()
     t.load()
     assert count["n"] == 1
+
+
+def test_concurrent_loads_call_factory_once():
+    factory_entered = Event()
+    release_factory = Event()
+    second_called_load = Event()
+    calls = []
+
+    def factory(model_size, device, compute_type):
+        calls.append((device, compute_type))
+        factory_entered.set()
+        assert release_factory.wait(2), "test did not release model factory"
+        return FakeModel()
+
+    transcriber = Transcriber(device="cpu", compute_type="float32",
+                              model_factory=factory)
+
+    def second_load():
+        second_called_load.set()
+        return transcriber.load()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(transcriber.load)
+        assert factory_entered.wait(2), "first load did not enter factory"
+        second = pool.submit(second_load)
+        assert second_called_load.wait(2), "second load did not start"
+        assert not second.done()
+        release_factory.set()
+        assert first.result(timeout=2) == "cpu"
+        assert second.result(timeout=2) == "cpu"
+
+    assert calls == [("cpu", "float32")]
+
+
+def test_load_failure_does_not_lock_out_a_later_retry():
+    calls = []
+
+    def factory(model_size, device, compute_type):
+        calls.append((device, compute_type))
+        if len(calls) == 1:
+            raise RuntimeError("temporary load failure")
+        return FakeModel()
+
+    transcriber = Transcriber(device="cuda", compute_type="float16",
+                              model_factory=factory)
+    with pytest.raises(RuntimeError, match="could not load Whisper model"):
+        transcriber.load()
+    assert transcriber.load() == "cuda"
+    assert calls == [("cuda", "float16"), ("cuda", "float16")]
 
 
 def test_transcribe_joins_segments_and_passes_options():

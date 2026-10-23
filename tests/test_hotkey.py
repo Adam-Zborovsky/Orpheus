@@ -32,3 +32,30 @@ def test_rebind_valid_updates():
     manager = HotkeyManager("<f9>", on_toggle=lambda: None)
     manager.rebind("<ctrl>+<alt>+<space>")
     assert manager.hotkey == "<ctrl>+<alt>+<space>"
+
+
+def test_failed_rebind_restores_previous_listener(monkeypatch):
+    import orpheus.hotkey as module
+
+    starts = []
+
+    class Listener:
+        def __init__(self, bindings):
+            self.key = next(iter(bindings))
+
+        def start(self):
+            starts.append(self.key)
+            if self.key == "<f10>":
+                raise RuntimeError("registration failed")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(module.keyboard, "GlobalHotKeys", Listener)
+    manager = HotkeyManager("<f9>", lambda: None)
+    manager.start()
+    with pytest.raises(RuntimeError, match="previous shortcut is still active"):
+        manager.rebind("<f10>")
+    assert manager.hotkey == "<f9>"
+    assert starts == ["<f9>", "<f10>", "<f9>"]
+    assert manager._listener.key == "<f9>"
