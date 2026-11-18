@@ -38,6 +38,14 @@ History supports search over raw and final text, pages beyond the latest 200 ent
 
 ## Setup
 
+For the portable Windows x64 app, download **Orpheus.exe** from
+[GitHub Releases](https://github.com/Adam-Zborovsky/Orpheus/releases/latest).
+Python is bundled; Whisper weights download on the first model load. Quit any
+existing Orpheus instance before starting the EXE. The EXE is unsigned and uses
+the same settings/history folder as the source installation.
+
+### Run from source
+
 Windows and Python **3.12** are required by this project's dependency range. The current environment uses PySide6 6.12.0, faster-whisper 1.2.1, and CTranslate2 4.8.3.
 
 ```powershell

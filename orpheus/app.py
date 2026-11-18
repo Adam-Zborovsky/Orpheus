@@ -240,6 +240,7 @@ class AppController(QObject):
         self._armed_retry: int | None = None
         self.settings_apply_hook: Callable[[Settings], None] | None = None
         self.last_error = ""
+        self._error_recovery_id: int | None = None
         self.status = "Loading model"
         self.backend_status = "Model not loaded"
         self._build_components()
@@ -285,8 +286,9 @@ class AppController(QObject):
         self.status = text
         self.status_changed.emit(text)
 
-    def _fail(self, text: str):
+    def _fail(self, text: str, recovery_id: int | None = None):
         self.last_error = text
+        self._error_recovery_id = recovery_id
         self.error.emit(text)
         self.recovery_changed.emit()
 
@@ -535,15 +537,17 @@ class AppController(QObject):
                             result.history_id, result.partial)
                         self.recovery_changed.emit()
                     elif result.ok and session.recovery_id is not None:
-                        self._recoveries.pop(session.recovery_id, None)
+                        self._remove_recovery(session.recovery_id)
                         self.recovery_changed.emit()
                     if result.notice:
                         self.notice.emit(result.notice)
                     if result.ok:
-                        self._set_status("Ready")
-                        self.state_changed.emit("done")
+                        attention = bool(self.last_error or self._recoveries)
+                        self._set_status("Needs attention · open Recover text" if attention else "Ready")
+                        self.state_changed.emit("error" if attention else "done")
                     else:
-                        self._fail(result.error or "Nothing was heard. Check your microphone and try again.")
+                        self._fail(result.error or "Nothing was heard. Check your microphone and try again.",
+                                   (session.recovery_id or session.id) if result.final_text else None)
                         self._set_status("Needs attention · open Recover text")
                         self.state_changed.emit("error")
         self._launch_pending()
@@ -551,9 +555,23 @@ class AppController(QObject):
 
     def dismiss_recovery(self, item_id):
         if self._armed_retry == item_id:
-            self.cancel_retry()
-        self._recoveries.pop(item_id, None)
+            self._armed_retry = None
+        self._remove_recovery(item_id)
         self.recovery_changed.emit()
+
+    def _remove_recovery(self, item_id):
+        removed = self._recoveries.pop(item_id, None)
+        if removed is None:
+            return
+        if self._error_recovery_id == item_id:
+            remaining = next(reversed(self._recoveries.values()), None)
+            self.last_error = remaining.error if remaining else ""
+            self._error_recovery_id = remaining.id if remaining else None
+        if (self._machine.state is State.IDLE and not self._pipeline_active
+                and not self._shutting_down and self._armed_retry is None):
+            attention = bool(self.last_error or self._recoveries)
+            self._set_status("Needs attention · open Recover text" if attention else "Ready")
+            self.state_changed.emit("error" if attention else "idle")
 
     def arm_retry(self, item_id):
         if self._shutting_down or self._machine.state is not State.IDLE or self._pipeline_active:
@@ -566,7 +584,8 @@ class AppController(QObject):
 
     def cancel_retry(self):
         self._armed_retry = None
-        self._set_status("Ready")
+        self._set_status("Needs attention · open Recover text"
+                         if self.last_error or self._recoveries else "Ready")
         self.recovery_changed.emit()
 
     def _confirm_retry(self):

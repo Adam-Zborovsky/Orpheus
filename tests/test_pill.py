@@ -27,7 +27,7 @@ def test_normalizer_speech_reaches_full_scale():
     n = LevelNormalizer()
     for _ in range(50):
         n.level(0.00007)
-    assert n.level(0.005) == 1.0  # a loud sample defines the peak -> full bar
+    assert 0.4 < n.level(0.005) < 0.7
 
 
 def test_normalizer_tracks_relative_dynamics():
@@ -43,7 +43,7 @@ def test_normalizer_recovers_after_loud_burst():
     last = 0.0
     for _ in range(400):
         last = n.level(0.004)  # sustained quieter speech
-    assert last > 0.9  # peak decays; bars must come back to life
+    assert 0.4 < last < 0.7  # quieter speech retains headroom
 
 
 # --- pill behavior ------------------------------------------------------------
@@ -58,7 +58,9 @@ def qapp():
 def test_each_controller_state_has_a_readable_label(qapp):
     pill = PillOverlay(reduced_motion=True)
     pill.set_state("listening")
-    assert pill._display_text() == "Recording"
+    assert pill._display_text() == ""
+    assert pill.width() == 88
+    assert pill.height() == 30
     pill.set_state("processing")
     assert pill._state == "transcribing"  # processing is an alias
     assert pill._display_text() == "Transcribing"
@@ -138,7 +140,7 @@ def test_cross_thread_level_delivery(qapp):
     thread.start()
     thread.join()
     qapp.processEvents()
-    assert max(pill._levels) > 0.9  # loud samples must draw visibly tall bars
+    assert max(pill._levels) > 0.7  # loud samples must draw visibly tall bars
     pill.set_state("idle")
 
 
@@ -283,3 +285,65 @@ def test_motion_preference_is_refreshed_between_states(qapp, monkeypatch):
     assert not pill._anim.isActive()
     assert pill.windowOpacity() == 1.0
     pill.set_state("idle")
+
+
+def test_sustained_speech_preserves_dynamics():
+    normalizer = LevelNormalizer()
+    samples = [0.001, 0.002, 0.004, 0.008, 0.016]
+    levels = [normalizer.level(value) for value in samples]
+    assert levels == sorted(set(levels))
+    assert all(0 < value < 1 for value in levels)
+    for _ in range(500):
+        assert normalizer.level(0.004) == levels[2]
+    assert normalizer.level(float("nan")) == 0
+    assert normalizer.level(float("inf")) == 0
+
+
+def test_transcribing_replaces_bars_with_glow(qapp, monkeypatch):
+    pill = PillOverlay(reduced_motion=False)
+    pill.set_state("listening")
+    pill.set_level(0.01)
+    pill.set_state("transcribing")
+    assert pill.width() < pill.WIDTH
+    assert pill._display_text() == "Transcribing"
+    monkeypatch.setattr(pill, "_paint_bars", lambda *args: pytest.fail("busy state drew audio bars"))
+    first = pill.grab().toImage()
+    for _ in range(25):
+        pill._tick()
+    second = pill.grab().toImage()
+    assert first != second
+    pill.set_state("idle")
+    pill._finish_close()
+
+
+def test_status_size_uses_transcribing_and_preserves_font_size(qapp):
+    from PySide6.QtGui import QFontMetricsF
+    pill = PillOverlay(reduced_motion=True)
+    pill.set_state("transcribing")
+    width = pill.width()
+    metrics = QFontMetricsF(pill._label_font())
+    assert width == __import__("math").ceil(metrics.horizontalAdvance("Transcribing")) + 24
+    assert pill._label_font().pointSizeF() == 9.0
+    for state in ("cancelled", "done", "cleaning"):
+        pill.set_state(state)
+        assert pill.width() == width
+    pill.set_state("error")
+    assert pill.width() >= metrics.horizontalAdvance("Needs attention") + 36
+    pill.set_state("idle")
+
+
+def test_shimmer_changes_letters_only(qapp):
+    from orpheus.ui.pill import _EDGE, _SURFACE
+    pill = PillOverlay(reduced_motion=False)
+    pill.set_state("transcribing")
+    pill._appear_t = 1.0
+    pill._t = 0.5
+    first = pill.grab().toImage()
+    pill._t = 1.3
+    second = pill.grab().toImage()
+    assert first != second
+    for x in range(15, pill.width() - 15):
+        for y in (4, pill.height() - 5):
+            assert first.pixelColor(x, y) == second.pixelColor(x, y) == _SURFACE
+    assert _EDGE.alpha() == 65
+    pill._finish_close()

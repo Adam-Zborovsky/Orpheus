@@ -1,5 +1,29 @@
 # Silent autostart
 
+## Portable Windows executable
+
+Download `Orpheus.exe` from GitHub Releases. To start it at login, create a
+shortcut to its permanent location in `shell:startup`; replace any existing
+source-based Orpheus shortcut rather than running both.
+
+To build locally with Python 3.12:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[build]"
+.\deploy\build-exe.ps1
+```
+
+The output is `dist\Orpheus.exe`. The build bundles Python, Qt, and transcription
+dependencies; it does not include model weights, user settings, or history.
+To check packaged dependencies without activating hotkeys or opening user data:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+Start-Process .\dist\Orpheus.exe -ArgumentList '--smoke-test', "$env:TEMP\orpheus-smoke.json" -Wait
+Get-Content "$env:TEMP\orpheus-smoke.json"
+Remove-Item Env:QT_QPA_PLATFORM
+```
+
 Orpheus is a Windows tray app — it needs the interactive desktop (audio, global
 hotkey, SendInput into focused windows), so it **cannot run in a Docker
 container**. It launches in your login session instead, with no console window.

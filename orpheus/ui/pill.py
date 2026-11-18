@@ -8,8 +8,8 @@ from collections import deque
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtGui import (
-    QAccessible, QAccessibleEvent, QColor,
-    QGuiApplication, QPainter, QPen, QScreen,
+    QAccessible, QAccessibleEvent, QBrush, QColor, QFontMetricsF,
+    QGuiApplication, QLinearGradient, QPainter, QPen, QScreen,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -25,12 +25,11 @@ _CLOSE_S = 0.18
 _DONE_HOLD_MS = 1_200
 _CANCELLED_HOLD_MS = 1_100
 _SLIDE_PX = 4.0
-_PAD = 12
 
 # Opaque surface makes the small status label independent of the wallpaper or
 # application behind it. Text/background contrast is over 15:1.
 _SURFACE = QColor(20, 22, 26)
-_EDGE = QColor(126, 132, 142)
+_EDGE = QColor(126, 132, 142, 65)
 _TEXT = QColor(248, 250, 252)
 _ACCENT = QColor(137, 231, 160)
 _ERROR_ACCENT = QColor(255, 138, 128)
@@ -70,17 +69,16 @@ def _client_area_animations_enabled() -> bool:
 
 
 class LevelNormalizer:
-    """Auto-gain for microphone level bars, with a decaying rolling peak."""
+    """Map RMS logarithmically from quiet room noise to loud speech.
 
-    MIN_PEAK = 0.002
-    DECAY = 0.985
-
-    def __init__(self):
-        self._peak = self.MIN_PEAK
+    A fixed -72 to -24 dBFS range preserves dynamics: sustained speech
+    cannot redefine itself as full scale, unlike rolling peak auto-gain.
+    """
 
     def level(self, rms_value: float) -> float:
-        self._peak = max(self._peak * self.DECAY, self.MIN_PEAK, rms_value)
-        return math.sqrt(min(1.0, rms_value / self._peak))
+        if not math.isfinite(rms_value) or rms_value <= 0:
+            return 0.0
+        return min(1.0, max(0.0, (20 * math.log10(rms_value) + 72) / 48))
 
 
 class PillOverlay(QWidget):
@@ -152,6 +150,8 @@ class PillOverlay(QWidget):
         was_hidden = not self.isVisible() or self._closing
         previous = self._state
         self._state = state
+        self._resize_for_state()
+        self._reposition()
         self._t = 0.0
         self._closing = False
         self._close_t = 0.0
@@ -263,10 +263,10 @@ class PillOverlay(QWidget):
         if screen is None:
             return
         geo = screen.availableGeometry()
-        desired_x = geo.left() + (geo.width() - self.WIDTH) // 2
-        desired_y = geo.bottom() - self.HEIGHT - 16 + 1
-        max_x = max(geo.left(), geo.right() - self.WIDTH + 1)
-        max_y = max(geo.top(), geo.bottom() - self.HEIGHT + 1)
+        desired_x = geo.left() + (geo.width() - self.width()) // 2
+        desired_y = geo.bottom() - self.height() - 16 + 1
+        max_x = max(geo.left(), geo.right() - self.width() + 1)
+        max_y = max(geo.top(), geo.bottom() - self.height() + 1)
         x = min(max(geo.left(), desired_x), max_x)
         y = min(max(geo.top(), desired_y), max_y)
         self.move(x, y)
@@ -325,8 +325,24 @@ class PillOverlay(QWidget):
 
     # -- painting --------------------------------------------------------------
 
+    def _label_font(self):
+        font = self.font()
+        font.setPointSizeF(9.0)
+        font.setWeight(font.Weight.DemiBold)
+        return font
+
+    def _resize_for_state(self) -> None:
+        metrics = QFontMetricsF(self._label_font())
+        # Keep normal status widths stable, using Transcribing as the baseline.
+        # Longer exceptional labels still need enough room to remain readable.
+        label_width = max(metrics.horizontalAdvance("Transcribing"),
+                          metrics.horizontalAdvance(self._display_text()))
+        padding = 36 if self._state == "error" else 24
+        width = 88 if self._state == "listening" else math.ceil(label_width) + padding
+        self.setFixedSize(width, max(30, math.ceil(metrics.height()) + 12))
+
     def _display_text(self) -> str:
-        return "" if self._state == "idle" else _LABELS.get(self._state, "")
+        return "" if self._state in {"idle", "listening"} else _LABELS.get(self._state, "")
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -339,21 +355,14 @@ class PillOverlay(QWidget):
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         painter.setBrush(_SURFACE)
         painter.setPen(QPen(_EDGE, 1))
-        painter.drawRoundedRect(rect, 18, 18)
-
-        font = painter.font()
-        font.setPointSizeF(9.0)
-        font.setWeight(font.Weight.DemiBold)
-        painter.setFont(font)
+        radius = rect.height() / 2
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.setFont(self._label_font())
         painter.setPen(_TEXT)
         label = self._display_text()
 
         if self._state == "listening":
-            text_rect = QRectF(rect.left() + _PAD, rect.top(), 66, rect.height())
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter
-                             | Qt.AlignmentFlag.AlignLeft, label)
-            self._paint_bars(painter, QRectF(rect.right() - 74, rect.top(),
-                                             64, rect.height()))
+            self._paint_bars(painter, rect.adjusted(12, 0, -12, 0))
         elif self._state == "error":
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(_ERROR_ACCENT)
@@ -366,9 +375,14 @@ class PillOverlay(QWidget):
             painter.setPen(_ACCENT)
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
         else:
+            if self._state == "transcribing" and not self._reduced_motion:
+                center = -24 + (self._t % 2.4) / 2.4 * (rect.width() + 48)
+                glow = QLinearGradient(center - 24, 0, center + 24, 0)
+                glow.setColorAt(0, QColor(180, 190, 185))
+                glow.setColorAt(0.5, _TEXT)
+                glow.setColorAt(1, QColor(180, 190, 185))
+                painter.setPen(QPen(QBrush(glow), 1))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-            if self._state in {"transcribing", "processing", "cleaning", "delivering"}:
-                self._paint_status_mark(painter, rect)
 
     def _paint_bars(self, painter: QPainter, rect: QRectF) -> None:
         painter.setPen(Qt.PenStyle.NoPen)
@@ -381,18 +395,4 @@ class PillOverlay(QWidget):
             painter.drawRoundedRect(
                 QRectF(rect.left() + i * pitch + (pitch - 2.2) / 2,
                        mid_y - height / 2, 2.2, height), 1.1, 1.1
-            )
-
-    def _paint_status_mark(self, painter: QPainter, rect: QRectF) -> None:
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(190, 198, 209))
-        if self._reduced_motion:
-            painter.drawEllipse(QPointF(rect.right() - 15, rect.center().y()), 2.2, 2.2)
-            return
-        phase = self._t * 4.5
-        for index in range(3):
-            alpha = int(100 + 155 * (0.5 + 0.5 * math.sin(phase - index * 0.8)))
-            painter.setBrush(QColor(190, 198, 209, alpha))
-            painter.drawEllipse(
-                QPointF(rect.right() - 14 - index * 7, rect.center().y()), 2.0, 2.0
             )

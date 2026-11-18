@@ -390,6 +390,50 @@ def test_retry_requires_destination_confirmation_and_does_not_duplicate_history(
     assert injector.injected == ["hello world"]
     assert len(record["history"].rows) == 1
     assert controller.recoveries == []
+    assert controller.last_error == ""
+    assert controller.status == "Ready"
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_copy_and_dismiss_resolves_pill_tray_and_error(qapp, controller_factory, active):
+    from orpheus.ui.pill import PillOverlay
+    from orpheus.ui.recovery_window import RecoveryWindow
+    from orpheus.ui.tray import TrayIcon
+
+    record = controller_factory()
+    controller = record["controller"]
+    record["injector"].inject = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("blocked"))
+    pill = PillOverlay(reduced_motion=True)
+    tray = TrayIcon()
+    controller.state_changed.connect(pill.set_state)
+    controller.status_changed.connect(tray.set_status)
+    controller.recovery_changed.connect(lambda: tray.set_recovery_count(len(controller.recoveries)))
+    start_recording(controller, qapp)
+    stop_recording(controller, qapp)
+    assert pump_until(qapp, lambda: not controller._threads)
+    assert pill._state == "error"
+    window = RecoveryWindow(controller)
+    window._copy.click()
+    assert qapp.clipboard().text() == "hello world"
+    assert len(controller.recoveries) == 1
+    if active:
+        start_recording(controller, qapp)
+    window._discard_confirm.setChecked(True)
+    window._dismiss.click()
+    assert controller.last_error == ""
+    assert controller.recoveries == []
+    assert "(1)" not in tray._recovery_action.text()
+    assert not window._copy.isEnabled()
+    assert not window._dismiss.isEnabled()
+    if active:
+        assert pill._state == "listening"
+        assert controller.status.startswith("Recording")
+    else:
+        assert not pill.isVisible()
+        assert controller.status == "Ready"
+        assert tray._status_action.text() == "Ready"
+        assert window._status.text() == "No errors need attention."
+    pill.hide()
 
 
 def test_unidentified_target_never_delivers(qapp, controller_factory):
@@ -488,3 +532,21 @@ def test_complete_preload_cancel_recovery_settings_and_quit_flow(qapp, controlle
     controller.shutdown()
     assert controller._shutdown_complete
     assert record["injector"].injected == []
+
+
+def test_dismiss_preserves_other_recoveries_and_unrelated_errors(qapp, controller_factory):
+    record = controller_factory()
+    controller = record["controller"]
+    record["injector"].inject = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("blocked"))
+    for _ in range(2):
+        start_recording(controller, qapp)
+        stop_recording(controller, qapp)
+        assert pump_until(qapp, lambda: not controller._threads)
+    newest, oldest = controller.recoveries
+    controller.dismiss_recovery(newest.id)
+    assert controller.last_error == oldest.error
+    assert controller.status.startswith("Needs attention")
+    controller._fail("Microphone unavailable")
+    controller.dismiss_recovery(oldest.id)
+    assert controller.last_error == "Microphone unavailable"
+    assert controller.status.startswith("Needs attention")
